@@ -37,6 +37,9 @@ if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
   echo "Logged in using ChatGPT"
   exit 0
 fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then
+  shift 2
+fi
 if [ "${1:-}" != "exec" ]; then
   echo "unexpected command" >&2
   exit 9
@@ -97,6 +100,11 @@ JSON
 		t.Fatalf("unexpected response: %+v", result.Response)
 	}
 	joinedCommand := strings.Join(result.Command, " ")
+	approvalIndex := indexOf(result.Command, "--ask-for-approval")
+	execIndex := indexOf(result.Command, "exec")
+	if approvalIndex < 0 || execIndex < 0 || approvalIndex > execIndex {
+		t.Fatalf("--ask-for-approval must precede exec: %v", result.Command)
+	}
 	for _, expected := range []string{
 		"exec", "--json", "--ephemeral", "--ignore-rules", "--ignore-user-config",
 		"--sandbox workspace-write", "--ask-for-approval never",
@@ -138,6 +146,15 @@ JSON
 	if _, err := os.Stat(filepath.Join(workspace, "repaired.c")); err != nil {
 		t.Fatal("fake Codex did not edit workspace")
 	}
+}
+
+func indexOf(values []string, needle string) int {
+	for i, value := range values {
+		if value == needle {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestChatGPTModeRemovesAPIKeyEnvironment(t *testing.T) {

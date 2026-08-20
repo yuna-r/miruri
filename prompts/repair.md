@@ -8,11 +8,12 @@ for contributors reviewing changes to the repair contract.
 Miruri invokes Codex non-interactively with:
 
 ```text
-codex exec
+codex
+  --ask-for-approval never
+  exec
   --ephemeral
   --json
   --sandbox workspace-write
-  --ask-for-approval never
   --output-schema <attempt>/response-schema.json
   --output-last-message <attempt>/final.json
   -

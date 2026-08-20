@@ -79,6 +79,7 @@ if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
   echo "Logged in using ChatGPT"
   exit 0
 fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
 if [ "${1:-}" != "exec" ]; then exit 8; fi
 shift
 out=""
@@ -181,6 +182,7 @@ func TestRejectedCodexRepairRestoresPreRepairCheckpoint(t *testing.T) {
 set -eu
 if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
 if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
 if [ "${1:-}" != "exec" ]; then exit 8; fi
 shift
 out=""

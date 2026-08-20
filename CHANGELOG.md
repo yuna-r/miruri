@@ -2,6 +2,13 @@
 
 All notable changes to Miruri will be documented here.
 
+## [0.1.0-alpha.4] - 2026-08-21
+
+### Fixed
+
+- invoke Codex approval policy as a top-level CLI option (`codex --ask-for-approval never exec ...`) for compatibility with current Codex CLI releases
+- add a regression test that requires the approval option to appear before the `exec` subcommand
+
 ## [0.1.0-alpha.3] - 2026-08-21
 
 ### Changed

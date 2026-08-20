@@ -4,7 +4,7 @@
 
 既存のC/C++プロジェクト全体を解析し、対象CPU・OS・ABI・SDK・GUI・graphics・shader・audio・input・plugin・assetの要件を分離したうえで、指定ターゲット向けの配布可能な成果物を生成することを目標としています。
 
-> Status: `v0.1.0-alpha.3` — artifact-only prototype
+> Status: `v0.1.0-alpha.4` — artifact-only prototype
 
 Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
 

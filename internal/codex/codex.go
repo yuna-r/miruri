@@ -179,14 +179,16 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 		return RepairResult{}, err
 	}
 
+	// --ask-for-approval is a top-level Codex CLI option. It must appear
+	// before the `exec` subcommand on current Codex CLI releases.
 	args := []string{
+		"--ask-for-approval", "never",
 		"exec",
 		"--json",
 		"--ephemeral",
 		"--ignore-rules",
 		"--color", "never",
 		"--sandbox", "workspace-write",
-		"--ask-for-approval", "never",
 		"--config", `web_search="disabled"`,
 		"--config", "sandbox_workspace_write.network_access=false",
 		"--config", "allow_login_shell=false",

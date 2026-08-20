@@ -283,7 +283,7 @@ Codex repair in isolated overlay
 compiler / linker / inspector verdict
 ```
 
-Miruriは`codex exec --sandbox workspace-write --ask-for-approval never`を利用し、dangerous bypassを使いません。
+Miruriは`codex --ask-for-approval never exec --sandbox workspace-write`を利用し、dangerous bypassを使いません。
 
 ## 13. Worker将来像
 
