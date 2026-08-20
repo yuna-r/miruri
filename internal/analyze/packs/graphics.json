@@ -1,0 +1,47 @@
+{
+  "id": "graphics",
+  "version": "0.1.0",
+  "description": "2D/3D graphics APIs",
+  "rules": [
+    {
+      "id": "direct3d11",
+      "description": "Direct3D 11",
+      "domain": "graphics",
+      "capability": "graphics.d3d11",
+      "hard": true,
+      "patterns": ["<d3d11.h>", "D3D11CreateDevice", "ID3D11Device"]
+    },
+    {
+      "id": "direct3d12",
+      "description": "Direct3D 12",
+      "domain": "graphics",
+      "capability": "graphics.d3d12",
+      "hard": true,
+      "patterns": ["<d3d12.h>", "D3D12CreateDevice", "ID3D12Device"]
+    },
+    {
+      "id": "vulkan",
+      "description": "Vulkan graphics",
+      "domain": "graphics",
+      "capability": "graphics.vulkan",
+      "hard": true,
+      "patterns": ["<vulkan/vulkan.h>", "vkCreateInstance", "VkDevice"]
+    },
+    {
+      "id": "opengl",
+      "description": "OpenGL graphics",
+      "domain": "graphics",
+      "capability": "graphics.opengl",
+      "hard": false,
+      "patterns": ["<GL/gl.h>", "<OpenGL/gl3.h>", "glCreateShader", "glDrawElements"]
+    },
+    {
+      "id": "metal",
+      "description": "Apple Metal graphics",
+      "domain": "graphics",
+      "capability": "graphics.metal",
+      "hard": true,
+      "patterns": ["<Metal/Metal.h>", "MTLCreateSystemDefaultDevice", "id<MTLDevice>"]
+    }
+  ]
+}

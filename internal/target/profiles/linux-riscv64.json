@@ -1,0 +1,18 @@
+{
+  "id": "linux-riscv64",
+  "display_name": "Linux RISC-V 64",
+  "os": "linux",
+  "arch": "riscv64",
+  "triple": "riscv64-unknown-linux-gnu",
+  "object_format": "elf",
+  "cmake_system_name": "Linux",
+  "cmake_processor": "riscv64",
+  "default_linker": "lld",
+  "requires_sysroot": true,
+  "requires_platform_sdk": false,
+  "capabilities": [
+    "c.standard", "cpu.riscv64", "os.linux", "abi.linux-gnu-riscv64", "format.elf",
+    "filesystem.posix", "threads.posix", "network.bsd-sockets",
+    "gui.gtk", "graphics.vulkan", "graphics.opengl", "audio.alsa", "input.evdev"
+  ]
+}

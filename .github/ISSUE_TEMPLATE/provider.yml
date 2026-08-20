@@ -1,0 +1,31 @@
+name: Capability/provider proposal
+description: Propose a new target, domain capability or implementation provider
+title: "[provider] "
+labels: [enhancement, provider]
+body:
+  - type: input
+    attributes:
+      label: Capability ID
+      placeholder: graphics.vulkan.feature.mesh-shader
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Source requirement semantics
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed provider and target constraints
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: License, SDK and redistribution constraints
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Validation strategy
+    validations:
+      required: true

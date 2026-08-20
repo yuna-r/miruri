@@ -1,0 +1,18 @@
+{
+  "id": "linux-arm64",
+  "display_name": "Linux ARM64",
+  "os": "linux",
+  "arch": "arm64",
+  "triple": "aarch64-unknown-linux-gnu",
+  "object_format": "elf",
+  "cmake_system_name": "Linux",
+  "cmake_processor": "aarch64",
+  "default_linker": "lld",
+  "requires_sysroot": true,
+  "requires_platform_sdk": false,
+  "capabilities": [
+    "c.standard", "cpu.arm64", "os.linux", "abi.linux-gnu-aarch64", "format.elf",
+    "filesystem.posix", "threads.posix", "network.bsd-sockets",
+    "gui.gtk", "graphics.vulkan", "graphics.opengl", "audio.alsa", "input.evdev"
+  ]
+}

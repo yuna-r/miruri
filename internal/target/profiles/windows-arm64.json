@@ -1,0 +1,19 @@
+{
+  "id": "windows-arm64",
+  "display_name": "Windows ARM64",
+  "os": "windows",
+  "arch": "arm64",
+  "triple": "aarch64-pc-windows-msvc",
+  "object_format": "pe",
+  "cmake_system_name": "Windows",
+  "cmake_processor": "ARM64",
+  "default_linker": "lld-link",
+  "requires_sysroot": false,
+  "requires_platform_sdk": true,
+  "capabilities": [
+    "c.standard", "cpu.arm64", "os.windows", "abi.windows-msvc-arm64", "format.pe",
+    "filesystem.win32", "threads.win32", "network.winsock",
+    "gui.win32", "graphics.d3d11", "graphics.d3d12", "graphics.vulkan",
+    "audio.wasapi", "input.xinput"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "input",
+  "version": "0.1.0",
+  "description": "Keyboard, pointer and game-controller input",
+  "rules": [
+    {
+      "id": "xinput",
+      "description": "Microsoft XInput",
+      "domain": "input",
+      "capability": "input.xinput",
+      "hard": true,
+      "patterns": ["<Xinput.h>", "XInputGetState", "XINPUT_GAMEPAD"]
+    },
+    {
+      "id": "directinput",
+      "description": "Microsoft DirectInput",
+      "domain": "input",
+      "capability": "input.directinput",
+      "hard": true,
+      "patterns": ["<dinput.h>", "DirectInput8Create", "IDirectInput8"]
+    },
+    {
+      "id": "sdl-input",
+      "description": "SDL input",
+      "domain": "input",
+      "capability": "input.sdl",
+      "hard": false,
+      "patterns": ["SDL_Gamepad", "SDL_GameController", "SDL_GetKeyboardState"]
+    }
+  ]
+}

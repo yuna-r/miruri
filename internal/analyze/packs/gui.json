@@ -1,0 +1,39 @@
+{
+  "id": "gui",
+  "version": "0.1.0",
+  "description": "Desktop GUI and window-system detection",
+  "rules": [
+    {
+      "id": "win32-gui",
+      "description": "Win32 windowing and message loop",
+      "domain": "gui",
+      "capability": "gui.win32",
+      "hard": true,
+      "patterns": ["CreateWindowEx", "WndProc", "DispatchMessage", "GetMessage(", "WM_PAINT"]
+    },
+    {
+      "id": "appkit-gui",
+      "description": "Apple AppKit GUI",
+      "domain": "gui",
+      "capability": "gui.appkit",
+      "hard": true,
+      "patterns": ["<AppKit/AppKit.h>", "NSApplication", "NSWindow"]
+    },
+    {
+      "id": "gtk-gui",
+      "description": "GTK GUI",
+      "domain": "gui",
+      "capability": "gui.gtk",
+      "hard": false,
+      "patterns": ["<gtk/gtk.h>", "gtk_application", "gtk_window"]
+    },
+    {
+      "id": "sdl-window",
+      "description": "SDL windowing",
+      "domain": "gui",
+      "capability": "gui.sdl",
+      "hard": false,
+      "patterns": ["<SDL", "SDL_CreateWindow", "SDL_PollEvent"]
+    }
+  ]
+}

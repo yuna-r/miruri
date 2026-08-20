@@ -1,0 +1,18 @@
+{
+  "id": "macos-arm64",
+  "display_name": "macOS ARM64",
+  "os": "darwin",
+  "arch": "arm64",
+  "triple": "arm64-apple-darwin",
+  "object_format": "macho",
+  "cmake_system_name": "Darwin",
+  "cmake_processor": "arm64",
+  "default_linker": "",
+  "requires_sysroot": false,
+  "requires_platform_sdk": true,
+  "capabilities": [
+    "c.standard", "cpu.arm64", "os.macos", "abi.darwin-arm64", "format.macho",
+    "filesystem.posix", "threads.posix", "network.bsd-sockets",
+    "gui.appkit", "graphics.metal", "graphics.opengl", "audio.coreaudio", "input.gamecontroller"
+  ]
+}

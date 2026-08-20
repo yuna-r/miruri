@@ -1,0 +1,63 @@
+{
+  "id": "core-c",
+  "version": "0.1.0",
+  "description": "Core C, ABI and CPU-specific constructs",
+  "rules": [
+    {
+      "id": "x86-intrinsics",
+      "description": "x86 SIMD or intrinsic usage",
+      "domain": "cpu",
+      "capability": "cpu.x86.intrinsics",
+      "hard": true,
+      "patterns": ["<immintrin.h>", "<xmmintrin.h>", "<emmintrin.h>", "__m128", "__m256", "_mm_", "__builtin_ia32"]
+    },
+    {
+      "id": "arm-neon",
+      "description": "ARM NEON intrinsic usage",
+      "domain": "cpu",
+      "capability": "cpu.arm.neon",
+      "hard": true,
+      "patterns": ["<arm_neon.h>", "float32x4_t", "vaddq_", "vld1q_"]
+    },
+    {
+      "id": "inline-assembly",
+      "description": "Inline assembly requires architecture review",
+      "domain": "cpu",
+      "capability": "cpu.inline-assembly",
+      "hard": true,
+      "patterns": ["__asm__", "asm(", "asm volatile"]
+    },
+    {
+      "id": "posix-threads",
+      "description": "POSIX threading",
+      "domain": "threading",
+      "capability": "threads.posix",
+      "hard": false,
+      "patterns": ["<pthread.h>", "pthread_create", "pthread_mutex"]
+    },
+    {
+      "id": "win32-threads",
+      "description": "Win32 threading",
+      "domain": "threading",
+      "capability": "threads.win32",
+      "hard": false,
+      "patterns": ["CreateThread(", "CRITICAL_SECTION", "WaitForSingleObject"]
+    },
+    {
+      "id": "bsd-sockets",
+      "description": "BSD/POSIX sockets",
+      "domain": "network",
+      "capability": "network.bsd-sockets",
+      "hard": false,
+      "patterns": ["<sys/socket.h>", "socket(", "getaddrinfo("]
+    },
+    {
+      "id": "winsock",
+      "description": "WinSock networking",
+      "domain": "network",
+      "capability": "network.winsock",
+      "hard": false,
+      "patterns": ["<winsock2.h>", "WSAStartup", "closesocket"]
+    }
+  ]
+}

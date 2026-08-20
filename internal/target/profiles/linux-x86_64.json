@@ -1,0 +1,18 @@
+{
+  "id": "linux-x86_64",
+  "display_name": "Linux x86_64",
+  "os": "linux",
+  "arch": "x86_64",
+  "triple": "x86_64-unknown-linux-gnu",
+  "object_format": "elf",
+  "cmake_system_name": "Linux",
+  "cmake_processor": "x86_64",
+  "default_linker": "lld",
+  "requires_sysroot": true,
+  "requires_platform_sdk": false,
+  "capabilities": [
+    "c.standard", "cpu.x86_64", "os.linux", "abi.linux-gnu-x86_64", "format.elf",
+    "filesystem.posix", "threads.posix", "network.bsd-sockets",
+    "gui.gtk", "graphics.vulkan", "graphics.opengl", "audio.alsa", "input.evdev"
+  ]
+}

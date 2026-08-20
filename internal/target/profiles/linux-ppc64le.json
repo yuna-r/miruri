@@ -1,0 +1,18 @@
+{
+  "id": "linux-ppc64le",
+  "display_name": "Linux POWER64 little-endian",
+  "os": "linux",
+  "arch": "ppc64le",
+  "triple": "powerpc64le-unknown-linux-gnu",
+  "object_format": "elf",
+  "cmake_system_name": "Linux",
+  "cmake_processor": "ppc64le",
+  "default_linker": "lld",
+  "requires_sysroot": true,
+  "requires_platform_sdk": false,
+  "capabilities": [
+    "c.standard", "cpu.ppc64le", "os.linux", "abi.linux-gnu-ppc64le", "format.elf",
+    "filesystem.posix", "threads.posix", "network.bsd-sockets",
+    "gui.gtk", "graphics.vulkan", "graphics.opengl", "audio.alsa", "input.evdev"
+  ]
+}

@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test ./...
+      - name: Build release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-tools stage
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/yuna-r/miruri/internal/cli.Version=$VERSION -X github.com/yuna-r/miruri/internal/cli.Commit=$COMMIT -X github.com/yuna-r/miruri/internal/cli.Date=$DATE"
+          while read -r GOOS GOARCH; do
+            NAME="miruri-${GOOS}-${GOARCH}"
+            rm -rf "stage/$NAME"
+            mkdir -p "stage/$NAME"
+            EXT=""
+            if [[ "$GOOS" == windows ]]; then EXT=".exe"; fi
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "$LDFLAGS" -o "stage/$NAME/miruri$EXT" ./cmd/miruri
+            cp LICENSE README.md NOTICE GENERATED_CODE_POLICY.md "stage/$NAME/"
+            cp -R LICENSES "stage/$NAME/"
+            if [[ "$GOOS" == windows ]]; then
+              (cd stage && zip -qr "../dist-tools/$NAME.zip" "$NAME")
+            else
+              tar -C stage -czf "dist-tools/$NAME.tar.gz" "$NAME"
+            fi
+          done <<'MATRIX'
+          darwin arm64
+          darwin amd64
+          linux arm64
+          linux amd64
+          windows arm64
+          windows amd64
+          MATRIX
+          (cd dist-tools && sha256sum * > SHA256SUMS)
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist-tools/* --generate-notes --verify-tag

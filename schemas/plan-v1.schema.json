@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/plan-v1.json",
+  "title": "Miruri Porting Plan v1",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "project_name", "target", "status", "items", "environment"],
+  "properties": {
+    "schema_version": {"const": "miruri.plan.v1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "project_name": {"type": "string"},
+    "target": {"type": "object", "required": ["id", "os", "arch", "triple", "object_format"]},
+    "status": {"enum": ["ready", "review", "blocked"]},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["requirement", "strategy", "reason", "blocking"],
+        "properties": {
+          "requirement": {"type": "string"},
+          "strategy": {
+            "enum": [
+              "native-rebuild", "source-rewrite", "generated-adapter",
+              "compatibility-runtime", "api-translation", "replacement-dependency",
+              "manual-review", "unresolved"
+            ]
+          },
+          "provider": {"type": "string"},
+          "reason": {"type": "string"},
+          "blocking": {"type": "boolean"}
+        }
+      }
+    },
+    "environment": {"type": "array"},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,39 @@
+{
+  "id": "audio",
+  "version": "0.1.0",
+  "description": "Audio APIs",
+  "rules": [
+    {
+      "id": "wasapi",
+      "description": "Windows Audio Session API",
+      "domain": "audio",
+      "capability": "audio.wasapi",
+      "hard": true,
+      "patterns": ["<audioclient.h>", "IAudioClient", "IMMDeviceEnumerator"]
+    },
+    {
+      "id": "coreaudio",
+      "description": "Apple CoreAudio",
+      "domain": "audio",
+      "capability": "audio.coreaudio",
+      "hard": true,
+      "patterns": ["<CoreAudio/CoreAudio.h>", "AudioUnit", "AudioObjectGetPropertyData"]
+    },
+    {
+      "id": "alsa",
+      "description": "ALSA audio",
+      "domain": "audio",
+      "capability": "audio.alsa",
+      "hard": true,
+      "patterns": ["<alsa/asoundlib.h>", "snd_pcm_open", "snd_pcm_writei"]
+    },
+    {
+      "id": "sdl-audio",
+      "description": "SDL audio",
+      "domain": "audio",
+      "capability": "audio.sdl",
+      "hard": false,
+      "patterns": ["SDL_OpenAudio", "SDL_AudioSpec", "SDL_OpenAudioDevice"]
+    }
+  ]
+}

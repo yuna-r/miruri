@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/dist-tools/
+/.test-dist/
+/.miruri/
+*.log
+.DS_Store
+.idea/
+.vscode/

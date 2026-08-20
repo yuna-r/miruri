@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/analysis-v1.json",
+  "title": "Miruri Analysis Report v1",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "project_name", "project_path", "build_systems", "languages", "requirements", "graph"],
+  "properties": {
+    "schema_version": {"const": "miruri.analysis.v1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "project_name": {"type": "string"},
+    "project_path": {"type": "string"},
+    "build_systems": {"type": "array", "items": {"type": "string"}},
+    "languages": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "file_count": {"type": "integer", "minimum": 0},
+    "text_file_count": {"type": "integer", "minimum": 0},
+    "binary_count": {"type": "integer", "minimum": 0},
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "domain", "description", "hard", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "domain": {"type": "string"},
+          "description": {"type": "string"},
+          "hard": {"type": "boolean"},
+          "evidence": {"type": "array"}
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {"type": "array"},
+        "edges": {"type": "array"}
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

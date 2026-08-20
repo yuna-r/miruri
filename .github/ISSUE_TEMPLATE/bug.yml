@@ -1,0 +1,34 @@
+name: Bug report
+description: Report incorrect analysis, planning, building or artifact inspection
+title: "[bug] "
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Miruri version
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Host OS / architecture
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Target profile
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Relevant report
+      description: Redact secrets, then include analysis/plan/manifest/build log excerpts.

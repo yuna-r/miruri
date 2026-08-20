@@ -1,0 +1,31 @@
+{
+  "id": "plugin",
+  "version": "0.1.0",
+  "description": "Runtime-loaded modules and binary-only dependencies",
+  "rules": [
+    {
+      "id": "dynamic-loading-posix",
+      "description": "POSIX dynamic module loading",
+      "domain": "plugin",
+      "capability": "plugin.dlopen",
+      "hard": false,
+      "patterns": ["<dlfcn.h>", "dlopen(", "dlsym("]
+    },
+    {
+      "id": "dynamic-loading-win32",
+      "description": "Win32 dynamic module loading",
+      "domain": "plugin",
+      "capability": "plugin.loadlibrary",
+      "hard": false,
+      "patterns": ["LoadLibrary", "GetProcAddress"]
+    },
+    {
+      "id": "binary-dependency",
+      "description": "Prebuilt binary dependency requires architecture and license review",
+      "domain": "dependency",
+      "capability": "dependency.binary-only",
+      "hard": true,
+      "extensions": [".dll", ".so", ".dylib", ".lib", ".a"]
+    }
+  ]
+}

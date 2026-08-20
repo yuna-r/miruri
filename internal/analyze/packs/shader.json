@@ -1,0 +1,39 @@
+{
+  "id": "shader",
+  "version": "0.1.0",
+  "description": "Shader source and binary assets",
+  "rules": [
+    {
+      "id": "hlsl",
+      "description": "HLSL shader source",
+      "domain": "shader",
+      "capability": "shader.hlsl",
+      "hard": true,
+      "extensions": [".hlsl", ".fx", ".fxh"]
+    },
+    {
+      "id": "glsl",
+      "description": "GLSL shader source",
+      "domain": "shader",
+      "capability": "shader.glsl",
+      "hard": true,
+      "extensions": [".glsl", ".vert", ".frag", ".geom", ".comp", ".tesc", ".tese"]
+    },
+    {
+      "id": "metal-shader",
+      "description": "Metal Shading Language source",
+      "domain": "shader",
+      "capability": "shader.msl",
+      "hard": true,
+      "extensions": [".metal"]
+    },
+    {
+      "id": "spirv",
+      "description": "SPIR-V shader binary",
+      "domain": "shader",
+      "capability": "shader.spirv",
+      "hard": true,
+      "extensions": [".spv"]
+    }
+  ]
+}

@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/manifest-v1.json",
+  "title": "Miruri Artifact Manifest v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "miruri_version",
+    "project_name",
+    "target",
+    "build_system",
+    "assurance",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.manifest.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "miruri_version": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string"
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "id",
+        "os",
+        "arch",
+        "triple",
+        "object_format"
+      ]
+    },
+    "build_system": {
+      "type": "string"
+    },
+    "assurance": {
+      "enum": [
+        "generated",
+        "linked",
+        "packaged",
+        "statically-validated",
+        "runtime-unvalidated",
+        "native-runtime-validated",
+        "behavior-validated",
+        "performance-validated"
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "source_path",
+          "packaged_path",
+          "format",
+          "architecture",
+          "kind",
+          "size",
+          "sha256",
+          "architecture_ok"
+        ],
+        "properties": {
+          "source_path": {
+            "type": "string"
+          },
+          "packaged_path": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "architecture": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "architecture_ok": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "build_log": {
+      "type": "string"
+    },
+    "analysis_file": {
+      "type": "string"
+    },
+    "plan_file": {
+      "type": "string"
+    },
+    "codex_repairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "attempt",
+          "status",
+          "duration_ms"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "repaired",
+              "blocked",
+              "no-change",
+              "error"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "changed_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assumptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remaining_risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "prompt_file": {
+            "type": "string"
+          },
+          "event_log": {
+            "type": "string"
+          },
+          "stderr_log": {
+            "type": "string"
+          },
+          "final_message_file": {
+            "type": "string"
+          },
+          "result_file": {
+            "type": "string"
+          },
+          "patch_file": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cached_input_tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "output_tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reasoning_output_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

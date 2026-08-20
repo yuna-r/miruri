@@ -1,0 +1,19 @@
+{
+  "id": "windows-x86_64",
+  "display_name": "Windows x86_64",
+  "os": "windows",
+  "arch": "x86_64",
+  "triple": "x86_64-pc-windows-msvc",
+  "object_format": "pe",
+  "cmake_system_name": "Windows",
+  "cmake_processor": "AMD64",
+  "default_linker": "lld-link",
+  "requires_sysroot": false,
+  "requires_platform_sdk": true,
+  "capabilities": [
+    "c.standard", "cpu.x86_64", "os.windows", "abi.windows-msvc-x86_64", "format.pe",
+    "filesystem.win32", "threads.win32", "network.winsock",
+    "gui.win32", "graphics.d3d11", "graphics.d3d12", "graphics.vulkan",
+    "audio.wasapi", "input.xinput"
+  ]
+}

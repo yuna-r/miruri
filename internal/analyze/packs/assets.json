@@ -1,0 +1,31 @@
+{
+  "id": "assets",
+  "version": "0.1.0",
+  "description": "Game and GUI resources",
+  "rules": [
+    {
+      "id": "win32-resource",
+      "description": "Win32 resource script",
+      "domain": "resource",
+      "capability": "resource.win32-rc",
+      "hard": false,
+      "extensions": [".rc", ".rc2"]
+    },
+    {
+      "id": "apple-plist",
+      "description": "Apple property list",
+      "domain": "resource",
+      "capability": "resource.apple-plist",
+      "hard": false,
+      "extensions": [".plist"]
+    },
+    {
+      "id": "game-assets",
+      "description": "Runtime media assets",
+      "domain": "asset",
+      "capability": "asset.runtime-media",
+      "hard": false,
+      "extensions": [".png", ".jpg", ".jpeg", ".webp", ".wav", ".ogg", ".flac", ".ttf", ".otf"]
+    }
+  ]
+}

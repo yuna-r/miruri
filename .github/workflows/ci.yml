@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build lld
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build Miruri
+        run: make build
+      - name: Host artifact smoke test
+        env:
+          MIRURI_SMOKE_OUT: .test-dist
+        run: ./scripts/smoke.sh ./bin/miruri
+      - name: Upload smoke artifact manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: miruri-ci-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            .test-dist/**/manifest.json
+            .test-dist/**/analysis.json
+            .test-dist/**/plan.json
+          if-no-files-found: ignore
