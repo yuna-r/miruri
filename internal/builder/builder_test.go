@@ -15,7 +15,30 @@ import (
 	"github.com/yuna-r/miruri/internal/target"
 )
 
+func requireNativeCLinker(t *testing.T) {
+	t.Helper()
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("clang is not available")
+	}
+	root := t.TempDir()
+	source := filepath.Join(root, "probe.c")
+	binary := filepath.Join(root, "probe")
+	if err := os.WriteFile(source, []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(clang, source, "-o", binary)
+	if output, err := command.CombinedOutput(); err != nil {
+		message := strings.TrimSpace(string(output))
+		if len(message) > 600 {
+			message = message[:600] + "..."
+		}
+		t.Skipf("native C linker is unavailable in this host environment: %v: %s", err, message)
+	}
+}
+
 func TestBuildHelloFixtureForHost(t *testing.T) {
+	requireNativeCLinker(t)
 	for _, tool := range []string{"clang", "cmake"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not available", tool)
@@ -48,6 +71,7 @@ func TestBuildHelloFixtureForHost(t *testing.T) {
 }
 
 func TestBuildUsesCodexRepairInIsolatedWorkspace(t *testing.T) {
+	requireNativeCLinker(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX fake Codex CLI")
 	}
@@ -365,7 +389,7 @@ func TestMakeCodexRepairCompactsDiagnosticsAndExcludesValidationBuildProducts(t 
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX Make and shell fixture")
 	}
-	for _, tool := range []string{"git", "clang", "make"} {
+	for _, tool := range []string{"git", "clang", "make", "llvm-ar"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not available", tool)
 		}
@@ -378,17 +402,17 @@ func TestMakeCodexRepairCompactsDiagnosticsAndExcludesValidationBuildProducts(t 
 	makefile := `CC ?= clang
 CFLAGS ?= -std=c99 -Wall
 
-all: program
+all: libprogram.a
 
-program: main.o
-	$(CC) $(CFLAGS) -o $@ $^
+libprogram.a: main.o
+	$(AR) rcs $@ $^
 
 main.o: main.c
 	@i=0; while [ $$i -lt 120 ]; do echo "system.h:$$i:1: warning: synthetic warning flood" >&2; i=$$((i+1)); done
 	$(CC) $(CFLAGS) -c main.c -o main.o
 
 clean:
-	rm -f program main.o
+	rm -f libprogram.a main.o
 `
 	if err := os.WriteFile(filepath.Join(project, "Makefile"), []byte(makefile), 0o644); err != nil {
 		t.Fatal(err)
@@ -422,7 +446,7 @@ printf '%s\n' 'do not retain me' > MIRURI_REPAIR_NOTES.md
 make -j1 >/dev/null 2>&1
 printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"make -j1"}}'
 cat >"$out" <<'JSON'
-{"status":"repaired","summary":"Added a portable implementation and linked for validation.","changed_files":["main.c","main.o","program","MIRURI_REPAIR_NOTES.md"],"assumptions":[],"remaining_risks":[]}
+{"status":"repaired","summary":"Added a portable implementation and linked for validation.","changed_files":["main.c","main.o","libprogram.a","MIRURI_REPAIR_NOTES.md"],"assumptions":[],"remaining_risks":[]}
 JSON
 `
 	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
@@ -458,7 +482,7 @@ JSON
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"main.o", "program", "MIRURI_REPAIR_NOTES", "GIT binary patch"} {
+	for _, forbidden := range []string{"main.o", "libprogram.a", "MIRURI_REPAIR_NOTES", "GIT binary patch"} {
 		if strings.Contains(string(patch), forbidden) {
 			t.Fatalf("%s leaked into source patch:\n%s", forbidden, patch)
 		}
@@ -481,7 +505,87 @@ JSON
 	if strings.Count(diagnostics.Text, "synthetic warning flood") > 3 {
 		t.Fatalf("warning flood leaked into Codex diagnostic packet:\n%s", diagnostics.Text)
 	}
-	if len(result.Manifest.Artifacts) != 1 || result.Manifest.Artifacts[0].Kind != "executable" {
-		t.Fatalf("final artifact was not produced: %+v", result.Manifest.Artifacts)
+	if len(result.Manifest.Artifacts) != 1 || result.Manifest.Artifacts[0].Kind != "static-library" {
+		t.Fatalf("final static-library artifact was not produced: %+v", result.Manifest.Artifacts)
+	}
+}
+
+func TestBuildAcceptsCodexPortedStatus(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\nproject(ported_fixture C)\nadd_executable(ported main.c)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "main.c"), []byte("#error TARGET_BACKEND_MISSING\nint main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeCodex := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+printf '%s' "$prompt" | grep -q 'create a new target platform backend'
+cat > main.c <<'C'
+#include <stdio.h>
+int main(void) { puts("ported"); return 0; }
+C
+printf '%s\n' '{"type":"thread.started","thread_id":"port_thread"}'
+printf '%s\n' '{"type":"turn.completed","turn_id":"port_turn","usage":{"input_tokens":10,"output_tokens":5}}'
+cat >"$out" <<'JSON'
+{"status":"ported","summary":"Created the authorized target backend path.","changed_files":["main.c"],"assumptions":[],"remaining_risks":[]}
+JSON
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Build(context.Background(), Config{
+		ProjectDir:   project,
+		Target:       profile,
+		OutDir:       filepath.Join(root, "dist"),
+		UseCodex:     true,
+		CodexMode:    codex.TaskPort,
+		MaxRepairs:   1,
+		CodexBinary:  fakeCodex,
+		CodexAuth:    codex.AuthChatGPT,
+		CodexTimeout: time.Minute,
+		Version:      "test",
+		Timeout:      2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Manifest.CodexRepairs) != 1 {
+		t.Fatalf("expected one port attempt: %+v", result.Manifest.CodexRepairs)
+	}
+	attempt := result.Manifest.CodexRepairs[0]
+	if attempt.Status != "ported" || attempt.Mode != string(codex.TaskPort) {
+		t.Fatalf("unexpected port provenance: %+v", attempt)
 	}
 }

@@ -151,6 +151,7 @@ type CodexUsage struct {
 
 type CodexRepairAttempt struct {
 	Attempt             int               `json:"attempt"`
+	Mode                string            `json:"mode,omitempty"`
 	Status              string            `json:"status"`
 	DurationMillis      int64             `json:"duration_ms"`
 	ThreadID            string            `json:"thread_id,omitempty"`

@@ -33,6 +33,7 @@ type Config struct {
 	OutDir       string
 	Generator    string
 	UseCodex     bool
+	CodexMode    codex.TaskMode
 	MaxRepairs   int
 	CodexBinary  string
 	CodexModel   string
@@ -72,6 +73,14 @@ type buildContext struct {
 func Build(ctx context.Context, config Config) (Result, error) {
 	if config.MaxRepairs < 0 {
 		return Result{}, fmt.Errorf("max repairs must be non-negative")
+	}
+	if config.CodexMode == "" {
+		config.CodexMode = codex.TaskRepair
+	}
+	switch config.CodexMode {
+	case codex.TaskRepair, codex.TaskPort, codex.TaskAuto:
+	default:
+		return Result{}, fmt.Errorf("invalid Codex mode %q", config.CodexMode)
 	}
 	if config.Timeout <= 0 {
 		config.Timeout = 30 * time.Minute
@@ -212,6 +221,7 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		}
 		attemptDir := filepath.Join(packageDir, "codex", fmt.Sprintf("attempt-%02d", attempt+1))
 		result, repairErr := codex.Repair(ctx, codex.RepairRequest{
+			Mode:          config.CodexMode,
 			Binary:        config.CodexBinary,
 			Workspace:     sourceDir,
 			OutputDir:     attemptDir,
@@ -232,7 +242,7 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		resultPath := filepath.Join(attemptDir, "result.json")
 		var changedFiles []string
 		if repairErr == nil {
-			if result.Response.Status != "repaired" {
+			if result.Response.Status != "repaired" && result.Response.Status != "ported" {
 				repairErr = fmt.Errorf("Codex returned status %q: %s", result.Response.Status, result.Response.Summary)
 			} else if violations := codex.ArtifactOnlyViolations(result.Events.Commands); len(violations) > 0 {
 				repairErr = fmt.Errorf("Codex violated artifact-only policy: %s", strings.Join(violations, "; "))
@@ -288,6 +298,7 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		}
 		repairInfo := model.CodexRepairAttempt{
 			Attempt:             attempt + 1,
+			Mode:                string(config.CodexMode),
 			Status:              status,
 			DurationMillis:      result.DurationMillis,
 			ThreadID:            result.Events.ThreadID,

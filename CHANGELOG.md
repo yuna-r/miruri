@@ -2,6 +2,29 @@
 
 All notable changes to Miruri will be documented here.
 
+## [0.1.0-alpha.7] - 2026-08-21
+
+### Fixed
+
+- Made `go test ./...` independent of the host macOS SDK for artifact inspection by inspecting the Go test executable instead of compiling a throwaway C executable.
+- Made the Make/Codex diagnostic compaction E2E fixture produce a static archive so it does not require the host system linker.
+- Skip native-link-dependent builder tests when the host C linker is unavailable or the local SDK installation is broken, while preserving the non-linking repair tests.
+
+### Improved
+
+- `miruri doctor` now verifies that `xcrun --sdk macosx --show-sdk-path` resolves to an existing SDK directory on macOS, instead of treating the presence of `xcrun` alone as sufficient.
+
+## [0.1.0-alpha.6] - 2026-08-21
+
+### Added
+- `miruri port` for explicitly authorized full platform/backend ports using Codex.
+- `--codex-mode repair|auto|port`; `auto` escalates from local repair to full backend generation within the same Codex task when required.
+- Codex structured status `ported` and per-attempt mode provenance in manifests.
+
+### Changed
+- Full-port/auto prompts may add platform abstraction layers, target-native GUI/backend implementations, resources and coherent multi-file build-system changes while preserving original platform backends and features.
+- A missing target backend is no longer considered sufficient reason for Codex to return `blocked` in `auto`/`port` mode.
+
 ## [0.1.0-alpha.5] - 2026-08-21
 
 ### Added

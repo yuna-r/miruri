@@ -1,9 +1,11 @@
 package doctor
 
 import (
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/yuna-r/miruri/internal/model"
 )
@@ -54,6 +56,19 @@ func Run() Report {
 			report.Ready = false
 		}
 		report.Checks = append(report.Checks, check)
+	}
+	if runtime.GOOS == "darwin" {
+		sdk := Check{Name: "macos-sdk", Required: true, Purpose: "usable macOS SDK for native artifact linking"}
+		if output, err := exec.Command("xcrun", "--sdk", "macosx", "--show-sdk-path").Output(); err == nil {
+			sdk.Path = strings.TrimSpace(string(output))
+			if info, statErr := os.Stat(sdk.Path); statErr == nil && info.IsDir() {
+				sdk.Found = true
+			}
+		}
+		if !sdk.Found {
+			report.Ready = false
+		}
+		report.Checks = append(report.Checks, sdk)
 	}
 	sort.SliceStable(report.Checks, func(i, j int) bool {
 		if report.Checks[i].Required != report.Checks[j].Required {

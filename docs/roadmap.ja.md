@@ -64,3 +64,16 @@
 - signed provenance
 - native worker validation
 - stable Project Graph / Target Contract / Provider APIs
+
+
+## v0.1.0-alpha.6: Full platform port mode
+
+- `miruri port` / `--codex-mode auto|port`
+- 新規platform backend、GUI adapter、target-native entry point、build branchの生成を明示許可
+- 元platform backendとfeature parityを維持し、backend新設だけを理由にblockedにしない
+- target実行禁止・network禁止・isolated source overlayは従来どおり維持
+
+## v0.1.0-alpha.7: Host-toolchain-resilient tests
+
+- macOS SDKの破損・古いCommand Line Tools設定がGo単体テストを壊さないようにする。
+- `miruri doctor` が実際に利用可能なmacOS SDKを検証する。

@@ -4,7 +4,7 @@
 
 既存のC/C++プロジェクト全体を解析し、対象CPU・OS・ABI・SDK・GUI・graphics・shader・audio・input・plugin・assetの要件を分離したうえで、指定ターゲット向けの配布可能な成果物を生成することを目標としています。
 
-> Status: `v0.1.0-alpha.5` — artifact-only prototype
+> Status: `v0.1.0-alpha.7` — artifact-only prototype
 
 Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
 
@@ -19,11 +19,12 @@ Miruri v0.1は、対象バイナリをエミュレーション実行しません
 - ELF、Mach-O、PE、static archiveの形式・CPU architecture・依存ライブラリ検査
 - `analysis.json`、`plan.json`、`manifest.json`、`build.log`を含むartifact set生成
 - 任意機能としてCodex CLIを使った制約付きrepair loop
+- `miruri port`による、target backend新規生成まで明示許可したfull platform port
 
 ## まだできないこと
 
 - 生成成果物の実機動作保証
-- GUI/renderer/audio/input backendの自動生成
+- GUI/renderer/audio/inputの決定論的Domain Pack/Provider実装（`miruri port`ではCodexによる生成を試行可能）
 - Direct3D、Vulkan、Metal間の実際のtranslation provider実装
 - shader reflectionとbinding remapの実装
 - dependency package resolver / SDK downloader
@@ -144,6 +145,34 @@ dist/<target>/codex/attempt-01/
 ```
 
 `repair.patch`には採用されたtext source/build-scriptだけが入り、破棄したbuild生成物は`result.json`と`manifest.json`の`discarded_changes`へ理由付きで記録されます。
+
+### Full platform port
+
+局所repairでは足りず、Windows専用GUIなどから新しいtarget backendそのものを作る必要がある場合は`port`を使います。
+
+```bash
+./bin/miruri port \
+  --target linux-x86_64 \
+  --sysroot ~/miruri-sysroots/linux-x86_64 \
+  --keep-work \
+  path/to/windows-project
+```
+
+`miruri port`はCodexを`auto` modeで起動し、最初は最小修正を試しつつ、必要なら同じtask内でfull portへ自動昇格します。新しいplatform abstraction、target backend、GUI entry point、build-system branch、resource定義などの追加を明示的に許可します。元platform backendと機能は可能な限り維持し、単に「新backendが必要」という理由だけでは`blocked`にしないようCodexへ指示します。
+
+同じ動作は`build`からも指定できます。
+
+```bash
+./bin/miruri build \
+  --target linux-x86_64 \
+  --sysroot ~/miruri-sysroots/linux-x86_64 \
+  --codex \
+  --codex-mode auto \
+  --max-repairs 12 \
+  path/to/project
+```
+
+`--codex-mode repair`は従来の局所修復、`auto`は必要時にfull portへ昇格、`port`は最初から大規模platform portを許可します。target artifactを実行しないartifact-only policy、network禁止、isolated workspace、source patch boundaryは全modeで維持されます。
 
 ## 設計上の核
 

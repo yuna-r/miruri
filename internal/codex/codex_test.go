@@ -271,3 +271,25 @@ exit 9
 		t.Fatalf("unexpected compatibility error: %v", err)
 	}
 }
+
+func TestPortAndAutoPromptsAuthorizeNewPlatformBackend(t *testing.T) {
+	base := RepairRequest{
+		Target:        model.TargetProfile{ID: "linux-x86_64", OS: "linux", Arch: "x86_64", Triple: "x86_64-unknown-linux-gnu", ObjectFormat: "elf"},
+		BuildSystem:   model.BuildSystemCMake,
+		Attempt:       1,
+		MiruriVersion: "test",
+	}
+	for _, mode := range []TaskMode{TaskPort, TaskAuto} {
+		request := base
+		request.Mode = mode
+		prompt := buildPrompt(request, "fatal error: windows.h: No such file or directory")
+		for _, expected := range []string{
+			"A requirement for a new backend is NOT by itself a reason to return \"blocked\"",
+			"Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("mode %s prompt missing %q:\n%s", mode, expected, prompt)
+			}
+		}
+	}
+}

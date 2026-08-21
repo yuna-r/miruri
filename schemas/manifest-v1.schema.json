@@ -137,10 +137,15 @@
             "type": "integer",
             "minimum": 1
           },
+          "mode": {
+            "type": "string",
+            "enum": ["repair", "auto", "port"]
+          },
           "status": {
             "type": "string",
             "enum": [
               "repaired",
+              "ported",
               "blocked",
               "no-change",
               "error"

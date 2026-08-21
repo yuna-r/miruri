@@ -26,7 +26,13 @@ const defaultRepairTimeout = 20 * time.Minute
 
 type AuthMode string
 
+type TaskMode string
+
 const (
+	TaskRepair TaskMode = "repair"
+	TaskPort   TaskMode = "port"
+	TaskAuto   TaskMode = "auto"
+
 	// AuthChatGPT strips API-key environment variables so Codex reuses the
 	// locally stored ChatGPT sign-in instead of accidentally creating API usage.
 	AuthChatGPT AuthMode = "chatgpt"
@@ -46,6 +52,7 @@ type Status struct {
 
 type RepairRequest struct {
 	Binary        string
+	Mode          TaskMode
 	Workspace     string
 	Target        model.TargetProfile
 	BuildSystem   model.BuildSystem
@@ -87,6 +94,7 @@ type EventSummary struct {
 }
 
 type RepairResult struct {
+	Mode                TaskMode                `json:"mode"`
 	Command             []string                `json:"command"`
 	Duration            time.Duration           `json:"-"`
 	DurationMillis      int64                   `json:"duration_ms"`
@@ -152,6 +160,14 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 	binary, err := resolveBinary(request.Binary)
 	if err != nil {
 		return RepairResult{}, err
+	}
+	if request.Mode == "" {
+		request.Mode = TaskRepair
+	}
+	switch request.Mode {
+	case TaskRepair, TaskPort, TaskAuto:
+	default:
+		return RepairResult{}, fmt.Errorf("invalid Codex task mode %q", request.Mode)
 	}
 	if request.Attempt <= 0 {
 		return RepairResult{}, fmt.Errorf("repair attempt must be positive")
@@ -254,8 +270,14 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 
 	command := exec.CommandContext(ctx, binary, args...)
 	command.Dir = workspace
+	taskName := "portability-repair"
+	if request.Mode == TaskPort {
+		taskName = "platform-port"
+	} else if request.Mode == TaskAuto {
+		taskName = "portability-auto"
+	}
 	command.Env = codexEnvironment(request.AuthMode, map[string]string{
-		"MIRURI_CODEX_TASK":    "portability-repair",
+		"MIRURI_CODEX_TASK":    taskName,
 		"MIRURI_ARTIFACT_ONLY": "1",
 		"MIRURI_TARGET":        request.Target.ID,
 		"MIRURI_TARGET_TRIPLE": request.Target.Triple,
@@ -282,6 +304,7 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 	defer stderrFile.Close()
 
 	result := RepairResult{
+		Mode:                request.Mode,
 		Command:             append([]string{binary}, args...),
 		PromptPath:          promptPath,
 		EventsPath:          eventsPath,
@@ -358,7 +381,7 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 		return result, errors.New(result.Error)
 	}
 	switch result.Response.Status {
-	case "repaired", "blocked", "no-change":
+	case "repaired", "ported", "blocked", "no-change":
 	default:
 		result.Error = fmt.Sprintf("Codex structured response has invalid status %q", result.Response.Status)
 		return result, errors.New(result.Error)
@@ -401,7 +424,52 @@ func buildPrompt(request RepairRequest, diagnosticSummary string) string {
 	if version == "" {
 		version = "dev"
 	}
-	return fmt.Sprintf(`You are Miruri %s's constrained portability repair agent.
+	mode := request.Mode
+	if mode == "" {
+		mode = TaskRepair
+	}
+
+	mission := `Goal:
+Repair this isolated copied source workspace so the existing build system can produce a linked target artifact. Do not execute target artifacts.
+
+Scope policy:
+- Make the smallest coherent source/build-script repair that addresses the supplied diagnostics.
+- Do not introduce a new application/platform backend unless it is genuinely required by the failing portability island.
+- If a feature-complete port requires a broad new platform backend, return status "blocked" and explain the backend that would be required.`
+	if mode == TaskPort {
+		mission = `Goal:
+Perform a feature-preserving platform port of this isolated copied source workspace and make its existing or revised build system produce a linked target artifact. Do not execute target artifacts.
+
+Full-port authorization:
+- You are explicitly authorized to create a new target platform backend and to make coherent multi-file architectural changes when required.
+- You may add target-specific source directories, platform abstraction interfaces, adapters, build-system branches, resources, generated text metadata, and target-native entry points.
+- Preserve the original source-platform backend instead of replacing or deleting it whenever practical.
+- Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration and other product features to semantically appropriate target-native facilities rather than stubbing or disabling them.
+- A requirement for a new backend is NOT by itself a reason to return "blocked". Creating that backend is the task.
+- Prefer existing dependencies already present in the workspace/sysroot/toolchain. You may wire in a dependency already available locally, but do not fetch network resources.
+- If exact platform semantics do not exist, implement the closest behavior-preserving target-native equivalent and record the difference in assumptions/remaining_risks.
+- Return status "ported" when a substantial platform backend/architecture port was implemented, or "repaired" for a smaller successful portability change.
+- Return "blocked" only when completion genuinely requires unavailable source, an unavailable external dependency/SDK, an unspecified proprietary contract, or another constraint that cannot be resolved from the local workspace.`
+	} else if mode == TaskAuto {
+		mission = `Goal:
+Produce a linked target artifact from this isolated copied source workspace without executing target artifacts.
+
+Automatic escalation policy:
+- Start with the smallest coherent portability repair.
+- If the failure reveals that the source is tied to another OS/CPU architecture or lacks a target platform backend, automatically escalate within this same task to a full feature-preserving platform port. Do not wait for additional authorization.
+- You are explicitly authorized to create target-specific source directories, platform abstraction interfaces, adapters, build-system branches, resources, generated text metadata, and target-native entry points when needed.
+- Preserve the original source-platform backend instead of replacing or deleting it whenever practical.
+- Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration and other product features to semantically appropriate target-native facilities rather than stubbing or disabling them.
+- A requirement for a new backend is NOT by itself a reason to return "blocked". Creating that backend is explicitly authorized.
+- Prefer existing dependencies already present in the workspace/sysroot/toolchain. You may wire in a dependency already available locally, but do not fetch network resources.
+- If exact platform semantics do not exist, implement the closest behavior-preserving target-native equivalent and record the difference in assumptions/remaining_risks.
+- Return status "ported" when a substantial platform backend/architecture port was implemented, or "repaired" for a smaller successful portability change.
+- Return "blocked" only when completion genuinely requires unavailable source, an unavailable external dependency/SDK, an unspecified proprietary contract, or another constraint that cannot be resolved from the local workspace.`
+	}
+
+	return fmt.Sprintf(`You are Miruri %s's Codex portability agent.
+
+Task mode: %s
 
 Target contract:
 - ID: %s
@@ -411,36 +479,35 @@ Target contract:
 - object format: %s
 
 Build system: %s
-Repair attempt: %d
+Attempt: %d
 
-Goal:
-Repair this isolated copied source workspace so the existing build system can produce a linked target artifact. Do not execute target artifacts.
+%s
 
 Mandatory constraints:
 - Work only inside the current Git workspace. It is a disposable copy, not the user's original repository.
-- Preserve public APIs, file formats, protocols, data layouts, observable behavior and license notices.
+- Preserve public APIs, file formats, protocols, persistent data semantics, observable behavior and license notices unless a target OS requires a documented native equivalent.
 - Preserve optimized architecture-specific paths behind correct compile-time feature guards.
-- Prefer portable ISO C/C++ fallbacks before adding target-specific intrinsics.
+- Prefer portable ISO C/C++ fallbacks before adding target-specific intrinsics when performance is not the defining behavior.
 - Do not silently disable GUI, rendering, shaders, audio, input, networking, plugins, assets or any other product feature.
 - Do not replace third-party code unless the replacement is license-compatible and the decision is documented in the structured response.
 - Do not use emulators or compatibility runners, including QEMU, Wine or Rosetta.
 - Do not run target executables, target test binaries, configure probes or generated target tools.
 - Host-side analysis and host-native code generators may run only when clearly separate from target artifacts.
 - Do not fetch network resources. Use only files and tools already present.
-- Make the smallest coherent source/build-script repair that addresses the supplied diagnostics.
-- You may compile or link to validate the repair, but do not intentionally modify or retain object files, executables, libraries, caches or other generated build products.
+- You may compile or link repeatedly to validate progress, but do not intentionally retain object files, executables, libraries, caches or other generated build products as source changes.
 - Do not create MIRURI_REPAIR_NOTES.md or other Miruri-specific files in the target project. Put assumptions and risks only in the structured response.
 - Add or update tests only when they can be compiled without executing target artifacts.
 
 Before finishing:
 1. Review the actual source/build-script diff.
 2. Ensure no feature was deleted merely to make compilation pass.
-3. Return the required structured JSON summary. The changed_files field is advisory; Miruri independently computes the authoritative source patch and discards generated build products.
+3. Ensure source-platform code remains usable where practical.
+4. Return the required structured JSON summary. The changed_files field is advisory; Miruri independently computes the authoritative source patch and discards generated build products.
 
 Miruri-selected build diagnostics:
 
 %s
-`, version, request.Target.ID, request.Target.OS, request.Target.Arch, request.Target.Triple, request.Target.ObjectFormat, request.BuildSystem, request.Attempt, strings.TrimSpace(diagnosticSummary))
+`, version, mode, request.Target.ID, request.Target.OS, request.Target.Arch, request.Target.Triple, request.Target.ObjectFormat, request.BuildSystem, request.Attempt, mission, strings.TrimSpace(diagnosticSummary))
 }
 
 func validateGitWorkspace(ctx context.Context, workspace string) error {
@@ -711,7 +778,7 @@ const repairResponseSchema = `{
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["repaired", "blocked", "no-change"]
+      "enum": ["repaired", "ported", "blocked", "no-change"]
     },
     "summary": {"type": "string", "minLength": 1},
     "changed_files": {

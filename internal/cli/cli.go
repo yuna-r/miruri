@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	Version = "0.1.0-alpha.5"
+	Version = "0.1.0-alpha.7"
 	Commit  = "dev"
 	Date    = "unknown"
 )
@@ -53,6 +53,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPlan(args[1:], stdout, stderr)
 	case "build":
 		return runBuild(args[1:], stdout, stderr)
+	case "port":
+		return runPort(args[1:], stdout, stderr)
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
 	default:
@@ -233,7 +235,8 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	sysroot := set.String("sysroot", "", "target sysroot path")
 	outDir := set.String("out", "", "output directory; default: <project>/dist")
 	generator := set.String("generator", "", "CMake generator; default: Ninja when available")
-	useCodex := set.Bool("codex", false, "allow constrained Codex repair attempts in the isolated source overlay")
+	useCodex := set.Bool("codex", false, "allow Codex portability work in the isolated source overlay")
+	codexModeFlag := set.String("codex-mode", string(codex.TaskRepair), "Codex task mode: repair, auto, or port")
 	maxRepairs := set.Int("max-repairs", 2, "maximum Codex repair attempts")
 	codexBin := set.String("codex-bin", "codex", "Codex CLI executable")
 	codexModel := set.String("codex-model", "", "optional Codex model override")
@@ -252,6 +255,11 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "miruri build:", err)
 		return 2
 	}
+	codexMode, err := parseCodexMode(*codexModeFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri build:", err)
+		return 2
+	}
 	profile, err := target.Resolve(*targetID)
 	if err != nil {
 		fmt.Fprintln(stderr, "miruri build:", err)
@@ -265,6 +273,7 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		OutDir:       *outDir,
 		Generator:    *generator,
 		UseCodex:     *useCodex,
+		CodexMode:    codexMode,
 		MaxRepairs:   *maxRepairs,
 		CodexBinary:  *codexBin,
 		CodexModel:   *codexModel,
@@ -305,6 +314,20 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Manifest:            %s\n", result.ManifestPath)
 	return 0
+}
+
+func runPort(args []string, stdout, stderr io.Writer) int {
+	// Port mode intentionally grants Codex broader source/backend authority than
+	// `build --codex`, while retaining the same isolated-workspace and
+	// artifact-only execution policy. User-supplied flags later in args may
+	// override these defaults.
+	defaults := []string{
+		"--codex",
+		"--codex-mode", string(codex.TaskAuto),
+		"--max-repairs", "12",
+		"--codex-timeout", "45m",
+	}
+	return runBuild(append(defaults, args...), stdout, stderr)
 }
 
 func runInspect(args []string, stdout, stderr io.Writer) int {
@@ -361,6 +384,16 @@ func parseCodexAuth(value string) (codex.AuthMode, error) {
 		return mode, nil
 	default:
 		return "", fmt.Errorf("invalid Codex auth policy %q; expected chatgpt or inherit", value)
+	}
+}
+
+func parseCodexMode(value string) (codex.TaskMode, error) {
+	mode := codex.TaskMode(strings.ToLower(strings.TrimSpace(value)))
+	switch mode {
+	case codex.TaskRepair, codex.TaskAuto, codex.TaskPort:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid Codex mode %q; expected repair, auto, or port", value)
 	}
 }
 
@@ -466,6 +499,7 @@ Commands:
   analyze   scan the complete project and build a capability graph
   plan      select portability strategies for a target contract
   build     create an isolated target artifact set without executing it
+  port      perform an authorized full platform port with Codex, then build
   inspect   inspect one ELF, Mach-O, PE or archive artifact
   doctor    inspect the local build environment
   codex     verify Codex CLI installation and ChatGPT authentication
@@ -480,10 +514,11 @@ Examples:
   %s inspect --target host dist/host/artifacts/program
   %s build --target linux-arm64 --sysroot /opt/sysroots/aarch64 .
   %s build --target linux-arm64 --sysroot /opt/sysroots/aarch64 --codex .
+  %s port --target linux-x86_64 --sysroot /opt/sysroots/x86_64 ./windows-app
 
 Miruri v0.1 supports CMake and Make projects. GUI, graphics, shader, audio,
 input, plugin and asset requirements are represented from the first release,
 while the initial builders focus on producing and statically inspecting linked
 C/C++ artifacts.
-`, name, name, name, name, name, name, name, name, name)
+`, name, name, name, name, name, name, name, name, name, name)
 }
