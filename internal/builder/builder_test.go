@@ -1,13 +1,22 @@
 package builder
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -875,6 +884,142 @@ executable('miruri-meson-fixture', 'main.c')
 	}
 }
 
+func TestBuildMesonScriptOnlyPackagesInstallTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Meson fixture uses a POSIX shell")
+	}
+	if _, err := exec.LookPath("clang"); err != nil {
+		t.Skip("clang is not available")
+	}
+
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "meson.build"), []byte("project('script-only')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeMeson := filepath.Join(t.TempDir(), "meson")
+	script := `#!/bin/sh
+set -eu
+cmd="$1"
+shift
+case "$cmd" in
+  setup)
+    mkdir -p "$1"
+    ;;
+  compile)
+    ;;
+  install)
+    : "${DESTDIR:?DESTDIR must be set}"
+    mkdir -p "$DESTDIR/usr/local/bin" "$DESTDIR/usr/local/share/script-only"
+    printf '#!/bin/sh\necho script-only\n' > "$DESTDIR/usr/local/bin/script-only"
+    chmod 755 "$DESTDIR/usr/local/bin/script-only"
+    printf 'payload\n' > "$DESTDIR/usr/local/share/script-only/data.txt"
+    ;;
+  *)
+    echo "unexpected fake meson command: $cmd" >&2
+    exit 2
+    ;;
+esac
+`
+	if err := os.WriteFile(fakeMeson, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MIRURI_MESON", fakeMeson)
+
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Build(context.Background(), Config{
+		ProjectDir: project,
+		Target:     profile,
+		OutDir:     t.TempDir(),
+		MaxRepairs: 0,
+		Version:    "test",
+		Timeout:    2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Manifest.Assurance != model.AssurancePackaged {
+		t.Fatalf("assurance = %s, want %s", result.Manifest.Assurance, model.AssurancePackaged)
+	}
+	if len(result.Manifest.Artifacts) != 1 {
+		t.Fatalf("artifacts = %d, want 1", len(result.Manifest.Artifacts))
+	}
+	artifact := result.Manifest.Artifacts[0]
+	if artifact.Kind != "install-tree" || artifact.Format != "tar" || artifact.Architecture != "portable" || !artifact.ArchitectureOK {
+		t.Fatalf("unexpected install-tree artifact: %+v", artifact)
+	}
+	if _, err := os.Stat(artifact.PackagedPath); err != nil {
+		t.Fatalf("install-tree archive missing: %v", err)
+	}
+	logData, err := os.ReadFile(filepath.Join(result.PackageDir, "build.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), " install -C ") {
+		t.Fatalf("build log does not contain Meson install fallback:\n%s", logData)
+	}
+}
+
+func TestPackageInstallTreeIsDeterministic(t *testing.T) {
+	stage := t.TempDir()
+	binDir := filepath.Join(stage, "usr", "local", "bin")
+	shareDir := filepath.Join(stage, "usr", "local", "share", "demo")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "demo"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shareDir, "data.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packageOne := t.TempDir()
+	first, ok, err := packageInstallTree(stage, packageOne)
+	if err != nil || !ok {
+		t.Fatalf("first package: ok=%v err=%v", ok, err)
+	}
+	if err := os.Chtimes(filepath.Join(shareDir, "data.txt"), time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	packageTwo := t.TempDir()
+	second, ok, err := packageInstallTree(stage, packageTwo)
+	if err != nil || !ok {
+		t.Fatalf("second package: ok=%v err=%v", ok, err)
+	}
+	if first.SHA256 != second.SHA256 {
+		t.Fatalf("install tree archive is not deterministic: %s != %s", first.SHA256, second.SHA256)
+	}
+
+	file, err := os.Open(first.PackagedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	tr := tar.NewReader(file)
+	seen := map[string]bool{}
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[header.Name] = true
+	}
+	for _, expected := range []string{"usr/local/bin/demo", "usr/local/share/demo/data.txt"} {
+		if !seen[expected] {
+			t.Fatalf("archive missing %s: %#v", expected, seen)
+		}
+	}
+}
+
 func TestChooseBuildSystemPrefersAutotoolsOverGeneratedMakefile(t *testing.T) {
 	selected, err := chooseBuildSystem([]model.BuildSystem{model.BuildSystemMake, model.BuildSystemAutotools})
 	if err != nil {
@@ -945,5 +1090,215 @@ func TestNeedsAutoreconfWhenConfigureIsMissing(t *testing.T) {
 	}
 	if !needsAutoreconf(root) {
 		t.Fatal("configure.ac without configure must require autoreconf")
+	}
+}
+
+func TestEnsureManagedMesonDownloadsVerifiesAndReusesCacheOffline(t *testing.T) {
+	var wheel bytes.Buffer
+	archive := zip.NewWriter(&wheel)
+	for name, content := range map[string]string{
+		"mesonbuild/__init__.py":  "",
+		"mesonbuild/mesonmain.py": "def main():\n    return 0\n",
+	} {
+		entry, err := archive.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(wheel.Bytes())
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = writer.Write(wheel.Bytes())
+	}))
+	defer server.Close()
+
+	spec := mesonSpec{
+		Version: "test",
+		Name:    "meson-test-py3-none-any.whl",
+		URL:     server.URL + "/meson.whl",
+		SHA256:  fmt.Sprintf("%x", digest),
+	}
+	cache := t.TempDir()
+	site, err := ensureManagedMeson(context.Background(), cache, false, spec, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("download count = %d, want 1", requests.Load())
+	}
+	if _, err := os.Stat(filepath.Join(site, "mesonbuild", "mesonmain.py")); err != nil {
+		t.Fatalf("managed Meson entry point missing: %v", err)
+	}
+
+	reused, err := ensureManagedMeson(context.Background(), cache, true, spec, io.Discard)
+	if err != nil {
+		t.Fatalf("offline reuse failed: %v", err)
+	}
+	if reused != site {
+		t.Fatalf("offline reuse path = %s, want %s", reused, site)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("offline reuse unexpectedly downloaded again: %d requests", requests.Load())
+	}
+
+	wheelPath := filepath.Join(cache, "tools", "meson", spec.Version, spec.Name)
+	if err := os.WriteFile(wheelPath, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureManagedMeson(context.Background(), cache, true, spec, io.Discard); err == nil || !strings.Contains(err.Error(), "--offline") {
+		t.Fatalf("tampered offline cache was not rejected clearly: %v", err)
+	}
+}
+
+func TestEnsureManagedMesonRejectsDigestMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte("not-the-expected-wheel"))
+	}))
+	defer server.Close()
+
+	spec := mesonSpec{
+		Version: "bad",
+		Name:    "meson-bad.whl",
+		URL:     server.URL + "/meson.whl",
+		SHA256:  strings.Repeat("0", 64),
+	}
+	_, err := ensureManagedMeson(context.Background(), t.TempDir(), false, spec, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Fatalf("digest mismatch was not rejected: %v", err)
+	}
+}
+
+func TestPrependEnvironmentPathPrefersManagedMeson(t *testing.T) {
+	environment := []string{"PYTHONPATH=/existing", "PATH=/bin"}
+	updated := prependEnvironmentPath(environment, "PYTHONPATH", []string{"/managed"})
+	for _, entry := range updated {
+		if strings.HasPrefix(entry, "PYTHONPATH=") {
+			want := "PYTHONPATH=/managed" + string(os.PathListSeparator) + "/existing"
+			if entry != want {
+				t.Fatalf("PYTHONPATH = %q, want %q", entry, want)
+			}
+			return
+		}
+	}
+	t.Fatal("PYTHONPATH missing")
+}
+
+func TestPackageSimpleMacOSAppRewritesPythonLauncherAndResources(t *testing.T) {
+	stage := t.TempDir()
+	binDir := filepath.Join(stage, "usr", "local", "bin")
+	shareDir := filepath.Join(stage, "usr", "local", "share")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(shareDir, "drawing", "drawing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(shareDir, "applications"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(shareDir, "locale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := `#!/opt/homebrew/bin/python3
+import os
+import gettext
+import locale
+pkgdatadir = '/usr/local/share/drawing'
+localedir = '/usr/local/share/locale'
+locale.bindtextdomain('drawing', localedir)
+locale.textdomain('drawing')
+print(pkgdatadir, localedir)
+`
+	if err := os.WriteFile(filepath.Join(binDir, "drawing"), []byte(launcher), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shareDir, "drawing", "drawing", "main.py"), []byte("pass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	desktop := "[Desktop Entry]\nName=Drawing\nExec=drawing\n"
+	if err := os.WriteFile(filepath.Join(shareDir, "applications", "com.github.maoschanz.drawing.desktop"), []byte(desktop), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packageDir := t.TempDir()
+	artifact, ok, err := packageSimpleMacOSApp(stage, packageDir, "drawing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected macOS app bundle")
+	}
+	if artifact.Kind != "application-bundle" || artifact.Format != "macos-app-tar" || artifact.SHA256 == "" {
+		t.Fatalf("unexpected artifact: %+v", artifact)
+	}
+	appDir := filepath.Join(packageDir, "artifacts", "Drawing.app")
+	bundleLauncher := filepath.Join(appDir, "Contents", "MacOS", "drawing")
+	wrapperData, err := os.ReadFile(bundleLauncher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperText := string(wrapperData)
+	for _, want := range []string{
+		"try_python",
+		"import gi; import cairo",
+		"python@3.14",
+		"python@3.13",
+		"Cellar",
+		"pygobject3",
+		"py3cairo",
+		"__miruri_bundle_entry__.py",
+	} {
+		if !strings.Contains(wrapperText, want) {
+			t.Fatalf("runtime wrapper missing %q:\n%s", want, wrapperText)
+		}
+	}
+	bundlePythonLauncher := filepath.Join(appDir, "Contents", "MacOS", "__miruri_bundle_entry__.py")
+	data, err := os.ReadFile(bundlePythonLauncher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "Contents", "MacOS", "drawing.py")); !os.IsNotExist(err) {
+		t.Fatalf("bundle entrypoint shadows Python package drawing: err=%v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"_miruri_resources = os.path.abspath",
+		"pkgdatadir = os.path.join(_miruri_resources, 'share', 'drawing')",
+		"localedir = os.path.join(_miruri_resources, 'share', 'locale')",
+		"GSETTINGS_SCHEMA_DIR",
+		"gettext.bindtextdomain('drawing', localedir)",
+		"gettext.textdomain('drawing')",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rewritten Python payload missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "pkgdatadir = '/usr/local/share/drawing'") {
+		t.Fatalf("Python payload still contains fixed pkgdatadir:\n%s", text)
+	}
+	if strings.Contains(text, "locale.bindtextdomain(") || strings.Contains(text, "locale.textdomain(") {
+		t.Fatalf("Python payload still contains non-portable locale gettext calls:\n%s", text)
+	}
+	plistData, err := os.ReadFile(filepath.Join(appDir, "Contents", "Info.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := string(plistData)
+	if !strings.Contains(plist, "com.github.maoschanz.drawing") || !strings.Contains(plist, "<string>Drawing</string>") {
+		t.Fatalf("unexpected Info.plist:\n%s", plist)
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "Contents", "Resources", "share", "drawing", "drawing", "main.py")); err != nil {
+		t.Fatalf("bundled resource missing: %v", err)
+	}
+	if _, err := os.Stat(artifact.PackagedPath); err != nil {
+		t.Fatalf("app tar missing: %v", err)
 	}
 }

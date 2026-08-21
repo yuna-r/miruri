@@ -4,25 +4,25 @@
 
 既存のC/C++プロジェクト全体を解析し、対象CPU・OS・ABI・SDK・GUI・graphics・shader・audio・input・plugin・assetの要件を分離したうえで、指定ターゲット向けの配布可能な成果物を生成することを目標としています。
 
-> Status: `v0.1.0-alpha.8.2` — artifact-only prototype with managed cross-Linux sysroots
+> Status: `v0.1.0-alpha.8.9` — artifact-only prototype with managed cross-Linux sysroots
 
-Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Autotools/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
+Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Meson/Autotools/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
 
 ## 現在できること
 
 - C/C++、Objective-C、assembly、HLSL、GLSL、Metal shader、SPIR-V、resource、assetを含むプロジェクト全体の走査
-- CMake / Autotools / Makeプロジェクトの検出とビルド
+- CMake / Meson / Autotools / Makeプロジェクトの検出とビルド
 - GUI、3D graphics、shader、audio、input、network、plugin、binary-only依存、CPU固有intrinsicのCapability検出
 - Target Contractに基づく移植strategyの選択
 - macOS、Linux、Windows、ARM64、x86_64、RISC-V、POWER向けtarget profile
 - isolated source overlay内でのビルド
-- ELF、Mach-O、PE、static archiveの形式・CPU architecture・依存ライブラリ検査
+- ELF、Mach-O、PE、static archiveの形式・CPU architecture・依存ライブラリ検査、およびMesonのinterpreted/resource-only install tree packaging
 - `analysis.json`、`plan.json`、`manifest.json`、`build.log`を含むartifact set生成
 - 任意機能としてCodex CLIを使った制約付きrepair loop
 - `miruri port`による、target backend新規生成まで明示許可したfull platform port
 - OCI Registryから対象architectureのLinux開発rootfsを非実行で取得するmanaged sysroot
 - sysroot manifest/layerのSHA-256検証、content-addressed cache、target lock、offline再利用
-- sysroot内GCC runtimeとhost側Clang/LLDを接続するCMake/Autotools/Make toolchain自動生成
+- sysroot内GCC runtimeとhost側Clang/LLDを接続するCMake/Meson/Autotools/Make toolchain自動生成
 
 ## まだできないこと
 
@@ -144,6 +144,10 @@ export MIRURI_SYSROOT_LINUX_RISCV32=/opt/miruri/sysroots/linux-riscv32
 M1 MacでPATH外のHomebrew LLVMを使う場合は、Miruriが`/opt/homebrew/opt/llvm/bin`を自動探索します。別prefixを使う場合は`MIRURI_LLVM_PREFIX`を指定します。foreign Linux artifactではhost側の`ar`/`ranlib`/`strip`へfallbackせず、`llvm-ar`と`llvm-ranlib`を必須にしてhost object formatの混入を防ぎます。
 
 macOS成果物はmacOS + Apple SDK、Windows成果物はWindows + Windows SDKを持つbuild workerで生成する方針です。MiruriはSDKのライセンス条件を迂回しません。
+
+## Managed Meson runtime
+
+Mesonプロジェクトで`meson`がPATH上に無い場合、MiruriはPython 3.10+を検出し、固定したMeson wheelをMiruri cacheへ取得してSHA-256検証後に展開します。グローバルPython環境、Homebrew、system package managerは変更しません。取得済みruntimeは再利用され、`--offline`ではcache済みruntimeのみを使用します。`MIRURI_MESON`で外部Meson executableを、`MIRURI_PYTHON`でmanaged runtime用Pythonを明示指定できます。
 
 ## Autotools hotfix
 

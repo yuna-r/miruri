@@ -2,6 +2,67 @@
 
 All notable changes to Miruri will be documented here.
 
+## [0.1.0-alpha.8.9] - 2026-08-21
+
+- Fix macOS interpreted-app bundles so the generated Python entrypoint no longer uses `<launcher>.py`, which could shadow an application package with the same name (for example Drawing's `drawing` package).
+- Use `__miruri_bundle_entry__.py` as the private bundle entrypoint and add a regression test for package-shadow avoidance.
+
+## [0.1.0-alpha.8.8] - 2026-08-21
+
+### Fixed
+
+- Minimal macOS Python/GTK bundles now use a runtime shell trampoline that probes Homebrew Python 3.14/3.13 installations and selects an interpreter that can actually import both `gi` and `cairo`.
+- PyGObject/PyCairo discovery now covers Homebrew global, `opt`, `libexec`, and versioned `Cellar` site-packages instead of assuming the bundle build Python minor version matches the installed bindings.
+
+## [0.1.0-alpha.8.7] - 2026-08-21
+
+### Fixed
+
+- Minimal macOS Python `.app` launchers now add Homebrew `pygobject3` and `py3cairo` formula-specific site-packages for the running Python major/minor version before importing application modules.
+- Finder/open-launched Python/GTK bundles no longer fail with `ModuleNotFoundError: No module named 'gi'` solely because Homebrew keeps PyGObject outside the Python formula's default site-packages.
+
+## [0.1.0-alpha.8.6] - 2026-08-21
+
+### Fixed
+
+- macOS `.app` launcher bundling now rewrites Linux/GNU-specific `locale.bindtextdomain()` and `locale.textdomain()` calls to their portable `gettext` equivalents.
+- Python/GTK applications such as Drawing no longer terminate at startup on macOS solely because Python's `_locale` module lacks GNU gettext bindings.
+
+## [0.1.0-alpha.8.5] - 2026-08-21
+
+### Added
+
+- Minimal macOS `.app` bundling for interpreted/resource-only Meson applications staged through `DESTDIR`.
+- Bundle-relative Python launcher rewriting for `/usr/local/share` resources, plus `Info.plist` generation and optional GSettings schema compilation.
+
+### Changed
+
+- macOS Meson install-tree fallback now keeps `install-root.tar` and additionally emits a directly usable `.app` directory plus deterministic `.app.tar` package when a launcher can be identified.
+
+## [0.1.0-alpha.8.4] - 2026-08-21
+
+### Added
+
+- Meson `DESTDIR` install-tree fallback for interpreted/resource-only applications that intentionally produce no linked executable or library.
+- Deterministic `artifacts/install-root.tar` packaging with normalized tar metadata and SHA-256 provenance.
+
+### Fixed
+
+- Successful Meson builds such as Python/GTK applications are no longer rejected solely because the build directory contains no ELF, Mach-O, PE, or static-library artifact.
+- Meson install-fallback output is persisted to `build.log`.
+
+## [0.1.0-alpha.8.3] - 2026-08-21
+
+### Added
+
+- Managed Meson runtime provisioning when `meson` is not already available on PATH.
+- SHA-256-pinned Meson 1.12.0 wheel download into the Miruri cache without global `pip` or Homebrew changes.
+- Offline reuse of the managed Meson cache plus `MIRURI_MESON` / `MIRURI_PYTHON` overrides.
+
+### Fixed
+
+- `miruri port` no longer invokes Codex merely because the host is missing the Meson executable.
+
 ## [0.1.0-alpha.8.2] - 2026-08-21
 
 ### Added

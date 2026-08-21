@@ -32,6 +32,8 @@ func Run() Report {
 		{Name: "clang", Required: true, Purpose: "C frontend and target code generation"},
 		{Name: "clang++", Required: true, Purpose: "C++ frontend and target code generation"},
 		{Name: "cmake", Required: false, Purpose: "CMake projects"},
+		{Name: "meson", Required: false, Purpose: "Meson projects; Miruri can provision a managed runtime when Python 3.10+ is available"},
+		{Name: "python3", Required: false, Purpose: "managed Meson runtime and Python-based ports"},
 		{Name: "ninja", Required: false, Purpose: "preferred CMake build backend"},
 		{Name: "make", Required: false, Purpose: "Make and Autotools projects"},
 		{Name: "autoreconf", Required: false, Purpose: "bootstrap Autotools Git source trees"},

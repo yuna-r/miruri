@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -69,6 +70,7 @@ type buildContext struct {
 	sourceDir       string
 	buildDir        string
 	packageDir      string
+	cacheDir        string
 	logPath         string
 	logBuffer       bytes.Buffer
 	codexRepairs    []model.CodexRepairAttempt
@@ -172,6 +174,7 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		sourceDir:       sourceDir,
 		buildDir:        buildDir,
 		packageDir:      packageDir,
+		cacheDir:        cacheRoot,
 		logPath:         filepath.Join(packageDir, "build.log"),
 		sysrootInfo:     sysrootInfo,
 		sysrootLockPath: sysrootLockPath,
@@ -426,14 +429,46 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("collect artifacts: %w", err)
 	}
+	packagedInstallTree := false
+	if len(inspection.Artifacts) == 0 && buildSystem == model.BuildSystemMeson {
+		stageRoot, stageErr := bc.stageMesonInstall(ctx)
+		if stageErr != nil {
+			_ = os.WriteFile(bc.logPath, bc.logBuffer.Bytes(), 0o644)
+			return Result{}, fmt.Errorf("build completed without a linked binary and Meson install staging failed: %w", stageErr)
+		}
+		installArtifact, ok, packageErr := packageInstallTree(stageRoot, packageDir)
+		if packageErr != nil {
+			return Result{}, fmt.Errorf("package Meson install tree: %w", packageErr)
+		}
+		if ok {
+			inspection.Artifacts = append(inspection.Artifacts, installArtifact)
+			inspection.Warnings = append(inspection.Warnings, "no linked executable or library was produced; packaged the Meson staged install tree instead")
+			packagedInstallTree = true
+			if bc.config.Target.OS == "darwin" {
+				appArtifact, appOK, appErr := packageSimpleMacOSApp(stageRoot, packageDir, bc.analysis.ProjectName)
+				if appErr != nil {
+					inspection.Warnings = append(inspection.Warnings, "macOS app bundle fallback was skipped: "+appErr.Error())
+				} else if appOK {
+					inspection.Artifacts = append(inspection.Artifacts, appArtifact)
+					inspection.Warnings = append(inspection.Warnings, "generated a minimal macOS .app bundle from the staged interpreted application payload")
+				}
+			}
+		}
+	}
+	if err := os.WriteFile(bc.logPath, bc.logBuffer.Bytes(), 0o644); err != nil {
+		return Result{}, err
+	}
 	if len(inspection.Artifacts) == 0 {
-		return Result{}, fmt.Errorf("build completed but no linked executable or library artifact was found under %s", searchRoot)
+		return Result{}, fmt.Errorf("build completed but no linked executable, library, or installable Meson payload was found under %s", searchRoot)
 	}
 
 	manifest := baseManifest(bc, analysisPath, planPath)
 	manifest.Artifacts = inspection.Artifacts
 	manifest.Warnings = append(manifest.Warnings, inspection.Warnings...)
 	manifest.Assurance = model.AssuranceStaticValidated
+	if packagedInstallTree {
+		manifest.Assurance = model.AssurancePackaged
+	}
 	for _, artifact := range inspection.Artifacts {
 		if !artifact.ArchitectureOK {
 			manifest.Assurance = model.AssuranceLinked
@@ -503,6 +538,13 @@ func (bc *buildContext) runCMake(ctx context.Context) error {
 
 func (bc *buildContext) runMeson(ctx context.Context) error {
 	environment := bc.mesonEnvironment()
+	meson, err := bc.resolveMeson(ctx)
+	if err != nil {
+		return fmt.Errorf("Meson setup failed: %w", err)
+	}
+	if meson.PythonPath != "" {
+		environment = prependEnvironmentPath(environment, "PYTHONPATH", []string{meson.PythonPath})
+	}
 	setupArgs := []string{"setup", bc.buildDir, bc.sourceDir, "--buildtype=release"}
 	if !target.IsNative(bc.config.Target) {
 		crossFile := filepath.Join(bc.workDir, "miruri-meson-cross.ini")
@@ -515,17 +557,173 @@ func (bc *buildContext) runMeson(ctx context.Context) error {
 		}
 		setupArgs = append(setupArgs, "--cross-file", crossFile)
 	}
-	if err := bc.runCommand(ctx, bc.workDir, environment, "meson", setupArgs...); err != nil {
+	setupCommandArgs := append(append([]string{}, meson.PrefixArgs...), setupArgs...)
+	if err := bc.runCommand(ctx, bc.workDir, environment, meson.Executable, setupCommandArgs...); err != nil {
 		return fmt.Errorf("Meson setup failed: %w", err)
 	}
 	jobs := runtime.NumCPU()
 	if jobs > 8 {
 		jobs = 8
 	}
-	if err := bc.runCommand(ctx, bc.workDir, environment, "meson", "compile", "-C", bc.buildDir, "-j", fmt.Sprintf("%d", jobs)); err != nil {
+	compileArgs := append(append([]string{}, meson.PrefixArgs...), "compile", "-C", bc.buildDir, "-j", fmt.Sprintf("%d", jobs))
+	if err := bc.runCommand(ctx, bc.workDir, environment, meson.Executable, compileArgs...); err != nil {
 		return fmt.Errorf("Meson compile failed: %w", err)
 	}
 	return nil
+}
+
+func (bc *buildContext) stageMesonInstall(parent context.Context) (string, error) {
+	stageRoot := filepath.Join(bc.workDir, "install-root")
+	if err := os.RemoveAll(stageRoot); err != nil {
+		return "", fmt.Errorf("clean Meson install staging directory: %w", err)
+	}
+	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
+		return "", fmt.Errorf("create Meson install staging directory: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(parent, bc.config.Timeout)
+	defer cancel()
+	meson, err := bc.resolveMeson(ctx)
+	if err != nil {
+		return "", err
+	}
+	environment := bc.mesonEnvironment()
+	if meson.PythonPath != "" {
+		environment = prependEnvironmentPath(environment, "PYTHONPATH", []string{meson.PythonPath})
+	}
+	// DESTDIR keeps install scripts in packaging mode. In particular, GNOME
+	// projects can skip host cache/database mutation while still producing the
+	// complete install payload.
+	environment = setEnvironment(environment, "DESTDIR", stageRoot)
+	args := append(append([]string{}, meson.PrefixArgs...), "install", "-C", bc.buildDir, "--no-rebuild")
+	if err := bc.runCommand(ctx, bc.workDir, environment, meson.Executable, args...); err != nil {
+		return "", fmt.Errorf("Meson install failed: %w", err)
+	}
+	return stageRoot, nil
+}
+
+func packageInstallTree(stageRoot, packageDir string) (model.ArtifactInfo, bool, error) {
+	entries := 0
+	artifactDir := filepath.Join(packageDir, "artifacts")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		return model.ArtifactInfo{}, false, err
+	}
+	finalPath := filepath.Join(artifactDir, "install-root.tar")
+	temporary, err := os.CreateTemp(artifactDir, ".install-root-*.tar")
+	if err != nil {
+		return model.ArtifactInfo{}, false, err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+
+	tw := tar.NewWriter(temporary)
+	walkErr := filepath.WalkDir(stageRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(stageRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		linkTarget := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err = os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if filepath.IsAbs(linkTarget) {
+				return fmt.Errorf("install tree contains absolute symlink %s -> %s", rel, linkTarget)
+			}
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(rel), linkTarget))
+			if resolved == ".." || strings.HasPrefix(resolved, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("install tree symlink escapes package root: %s -> %s", rel, linkTarget)
+			}
+		}
+		header, err := tar.FileInfoHeader(info, linkTarget)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		header.ModTime = time.Unix(0, 0).UTC()
+		header.AccessTime = time.Time{}
+		header.ChangeTime = time.Time{}
+		header.Uid = 0
+		header.Gid = 0
+		header.Uname = ""
+		header.Gname = ""
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			input, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(tw, input)
+			closeErr := input.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			entries++
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			entries++
+		}
+		return nil
+	})
+	closeTarErr := tw.Close()
+	closeFileErr := temporary.Close()
+	if walkErr != nil {
+		return model.ArtifactInfo{}, false, walkErr
+	}
+	if closeTarErr != nil {
+		return model.ArtifactInfo{}, false, closeTarErr
+	}
+	if closeFileErr != nil {
+		return model.ArtifactInfo{}, false, closeFileErr
+	}
+	if entries == 0 {
+		return model.ArtifactInfo{}, false, nil
+	}
+	if err := os.Rename(temporaryPath, finalPath); err != nil {
+		return model.ArtifactInfo{}, false, err
+	}
+	file, err := os.Open(finalPath)
+	if err != nil {
+		return model.ArtifactInfo{}, false, err
+	}
+	hash := sha256.New()
+	size, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return model.ArtifactInfo{}, false, copyErr
+	}
+	if closeErr != nil {
+		return model.ArtifactInfo{}, false, closeErr
+	}
+	return model.ArtifactInfo{
+		SourcePath:     filepath.ToSlash(stageRoot),
+		PackagedPath:   filepath.ToSlash(finalPath),
+		Format:         "tar",
+		Architecture:   "portable",
+		Kind:           "install-tree",
+		Size:           size,
+		SHA256:         hex.EncodeToString(hash.Sum(nil)),
+		ArchitectureOK: true,
+		Notes: []string{
+			"Meson DESTDIR install payload; extract preserving paths under the target installation root",
+			fmt.Sprintf("contains %d regular file(s) or symlink(s)", entries),
+		},
+	}, true, nil
 }
 
 func generateMesonCrossFile(profile model.TargetProfile, sysrootPath string, toolchain llvmToolchain) (string, error) {
@@ -789,6 +987,25 @@ func appendCompilerFlag(environment []string, name, flag string) []string {
 		}
 	}
 	return environment
+}
+
+func prependEnvironmentPath(environment []string, name string, additions []string) []string {
+	if len(additions) == 0 {
+		return environment
+	}
+	existing := ""
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			existing = strings.TrimPrefix(entry, prefix)
+			break
+		}
+	}
+	parts := append([]string{}, additions...)
+	if existing != "" {
+		parts = append(parts, existing)
+	}
+	return setEnvironment(environment, name, strings.Join(parts, string(os.PathListSeparator)))
 }
 
 func appendEnvironmentPath(environment []string, name string, additions []string) []string {
