@@ -2,6 +2,63 @@
 
 All notable changes to Miruri will be documented here.
 
+## [0.1.0-alpha.8.2] - 2026-08-21
+
+### Added
+
+- Meson project builds via `meson setup` and `meson compile`.
+- Native macOS Meson builds inherit the Apple SDK and Homebrew pkg-config search paths.
+- Meson cross-file generation for non-native targets using Miruri's selected LLVM/sysroot toolchain.
+
+## [0.1.0-alpha.8.1] - 2026-08-21
+
+### Added
+
+- Native Autotools build adapter with isolated out-of-tree `configure` + `make` builds.
+- Automatic `autoreconf -fi` bootstrap when Git source contains `configure.ac` / `configure.in` but no current `configure` script.
+- Autotools cross configuration with `--host=<target-triple>` and `--build=<host-triplet>` when `config.guess` is available.
+- macOS Autotools integration for Apple `SDKROOT` / `-isysroot` and Homebrew keg-only `pkg-config` / `aclocal` metadata.
+
+### Changed
+
+- Autotools is preferred over a generated Makefile when both are detected, preventing stale host/target `configure` results from being reused.
+- `miruri doctor` now reports `autoreconf` and `pkg-config` availability.
+
+### Fixed
+
+- Autotools projects such as `jubalh/nudoku` are no longer rejected as an unsupported build system.
+
+## [0.1.0-alpha.8] - 2026-08-21
+
+### Added
+
+- Managed cross-Linux sysroots for `linux-x86_64`, `linux-arm64`, `linux-ppc64le` and `linux-riscv64`.
+- Direct OCI Registry v2 pull path with Bearer authentication, multi-platform manifest selection and SHA-256 verification of manifests, configs and layers.
+- Safe OCI layer extraction with whiteout handling, absolute-symlink rebasing, path-traversal rejection and omission of host device nodes/FIFOs.
+- Content-addressed sysroot store, target and manifest-digest concurrency locks, offline reuse and explicit refresh.
+- `miruri sysroot providers|ensure|list|path|remove` management commands.
+- `--offline`, `--refresh-sysroot`, `--sysroot-timeout`, `--cache-dir` and `MIRURI_CACHE_DIR` controls.
+- `sysroot.lock.json` artifact provenance and manifest-level sysroot/toolchain records.
+
+### Changed
+
+- `miruri build` and `miruri port` now provision a trusted managed sysroot automatically when a supported cross-Linux target omits `--sysroot`.
+- Clang/LLVM discovery now recognizes standard Apple Silicon and Intel Homebrew LLVM prefixes plus `MIRURI_LLVM_PREFIX`.
+- CMake and Make adapters now connect the managed rootfs GCC runtime to Clang using external-toolchain settings, and configure cross `pkg-config` paths.
+- Cross-Linux archive/index tools must be LLVM-native; Miruri no longer falls back to host `ar`, `ranlib` or `strip` for foreign artifacts.
+- `miruri plan` reports an available managed provider without downloading registry content.
+- `miruri doctor` checks both Clang frontends and LLD, and no longer implies Docker is required for managed sysroots.
+
+### Security
+
+- OCI content is never executed while provisioning a sysroot.
+- Blob digest mismatch, manifest digest mismatch, archive path traversal and escaping relative symlinks are rejected.
+- Cached blobs are re-hashed before reuse, incomplete rootfs stores self-repair online, and OCI whiteouts are order-independent with respect to entries from the same layer.
+
+### Fixed
+
+- Dry-run manifests now serialize `artifacts` as an empty array instead of JSON `null`.
+
 ## [0.1.0-alpha.7] - 2026-08-21
 
 ### Fixed

@@ -173,6 +173,27 @@ type CodexRepairAttempt struct {
 	Error               string            `json:"error,omitempty"`
 }
 
+type SysrootProvenance struct {
+	Mode           string `json:"mode"`
+	TargetID       string `json:"target_id"`
+	Path           string `json:"path,omitempty"`
+	Provider       string `json:"provider,omitempty"`
+	Source         string `json:"source,omitempty"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
+	Platform       string `json:"platform,omitempty"`
+	LockFile       string `json:"lock_file,omitempty"`
+}
+
+type ToolchainProvenance struct {
+	CCompiler    string `json:"c_compiler"`
+	CXXCompiler  string `json:"cxx_compiler"`
+	Archiver     string `json:"archiver,omitempty"`
+	Ranlib       string `json:"ranlib,omitempty"`
+	Strip        string `json:"strip,omitempty"`
+	Linker       string `json:"linker,omitempty"`
+	GCCToolchain string `json:"gcc_toolchain,omitempty"`
+}
+
 type BuildManifest struct {
 	SchemaVersion string               `json:"schema_version"`
 	GeneratedAt   time.Time            `json:"generated_at"`
@@ -180,6 +201,8 @@ type BuildManifest struct {
 	ProjectName   string               `json:"project_name"`
 	Target        TargetProfile        `json:"target"`
 	BuildSystem   BuildSystem          `json:"build_system"`
+	Sysroot       *SysrootProvenance   `json:"sysroot,omitempty"`
+	Toolchain     *ToolchainProvenance `json:"toolchain,omitempty"`
 	Assurance     ArtifactAssurance    `json:"assurance"`
 	Artifacts     []ArtifactInfo       `json:"artifacts"`
 	CodexRepairs  []CodexRepairAttempt `json:"codex_repairs,omitempty"`

@@ -40,6 +40,77 @@
     "build_system": {
       "type": "string"
     },
+    "sysroot": {
+      "type": "object",
+      "required": [
+        "mode",
+        "target_id"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "explicit",
+            "environment",
+            "managed",
+            "managed-pending"
+          ]
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "lock_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolchain": {
+      "type": "object",
+      "required": [
+        "c_compiler",
+        "cxx_compiler"
+      ],
+      "properties": {
+        "c_compiler": {
+          "type": "string"
+        },
+        "cxx_compiler": {
+          "type": "string"
+        },
+        "archiver": {
+          "type": "string"
+        },
+        "ranlib": {
+          "type": "string"
+        },
+        "strip": {
+          "type": "string"
+        },
+        "linker": {
+          "type": "string"
+        },
+        "gcc_toolchain": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "assurance": {
       "enum": [
         "generated",
@@ -139,7 +210,11 @@
           },
           "mode": {
             "type": "string",
-            "enum": ["repair", "auto", "port"]
+            "enum": [
+              "repair",
+              "auto",
+              "port"
+            ]
           },
           "status": {
             "type": "string",

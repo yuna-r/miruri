@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yuna-r/miruri/internal/model"
@@ -33,4 +34,29 @@ func TestPlanSeparatesTranslationAndBinaryBlocker(t *testing.T) {
 	if strategies["dependency.binary-only"] != model.StrategyUnresolved {
 		t.Fatalf("unexpected binary dependency strategy: %s", strategies["dependency.binary-only"])
 	}
+}
+
+func TestAutomaticSysrootProviderRemovesMissingEnvironmentWarning(t *testing.T) {
+	profile, err := target.Resolve("linux-arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := model.AnalysisReport{ProjectName: "fixture", BuildSystems: []model.BuildSystem{model.BuildSystemCMake}}
+	plan := CreateWithOptions(analysis, profile, Options{AutomaticSysroot: true})
+	for _, requirement := range plan.Environment {
+		if requirement.Name == "sysroot" {
+			if requirement.Required && requirement.Reason == "" {
+				t.Fatal("automatic sysroot requirement has no explanation")
+			}
+			if containsFold(requirement.Reason, "missing") {
+				t.Fatalf("automatic sysroot was reported missing: %+v", requirement)
+			}
+			return
+		}
+	}
+	t.Fatal("sysroot environment requirement missing")
+}
+
+func containsFold(value, fragment string) bool {
+	return strings.Contains(strings.ToLower(value), strings.ToLower(fragment))
 }

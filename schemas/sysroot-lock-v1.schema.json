@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/sysroot-lock-v1.json",
+  "title": "Miruri Managed Sysroot Lock v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "created_at",
+    "target_id",
+    "provider",
+    "source",
+    "manifest_digest",
+    "platform",
+    "layers"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.sysroot-lock.v1"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "target_id": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "config_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["digest"],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "media_type": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

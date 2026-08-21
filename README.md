@@ -4,14 +4,14 @@
 
 既存のC/C++プロジェクト全体を解析し、対象CPU・OS・ABI・SDK・GUI・graphics・shader・audio・input・plugin・assetの要件を分離したうえで、指定ターゲット向けの配布可能な成果物を生成することを目標としています。
 
-> Status: `v0.1.0-alpha.7` — artifact-only prototype
+> Status: `v0.1.0-alpha.8.2` — artifact-only prototype with managed cross-Linux sysroots
 
-Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
+Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Autotools/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
 
 ## 現在できること
 
 - C/C++、Objective-C、assembly、HLSL、GLSL、Metal shader、SPIR-V、resource、assetを含むプロジェクト全体の走査
-- CMake / Makeプロジェクトの検出とビルド
+- CMake / Autotools / Makeプロジェクトの検出とビルド
 - GUI、3D graphics、shader、audio、input、network、plugin、binary-only依存、CPU固有intrinsicのCapability検出
 - Target Contractに基づく移植strategyの選択
 - macOS、Linux、Windows、ARM64、x86_64、RISC-V、POWER向けtarget profile
@@ -20,6 +20,9 @@ Miruri v0.1は、対象バイナリをエミュレーション実行しません
 - `analysis.json`、`plan.json`、`manifest.json`、`build.log`を含むartifact set生成
 - 任意機能としてCodex CLIを使った制約付きrepair loop
 - `miruri port`による、target backend新規生成まで明示許可したfull platform port
+- OCI Registryから対象architectureのLinux開発rootfsを非実行で取得するmanaged sysroot
+- sysroot manifest/layerのSHA-256検証、content-addressed cache、target lock、offline再利用
+- sysroot内GCC runtimeとhost側Clang/LLDを接続するCMake/Autotools/Make toolchain自動生成
 
 ## まだできないこと
 
@@ -27,7 +30,7 @@ Miruri v0.1は、対象バイナリをエミュレーション実行しません
 - GUI/renderer/audio/inputの決定論的Domain Pack/Provider実装（`miruri port`ではCodexによる生成を試行可能）
 - Direct3D、Vulkan、Metal間の実際のtranslation provider実装
 - shader reflectionとbinding remapの実装
-- dependency package resolver / SDK downloader
+- source dependency package resolver / proprietary platform SDK downloader
 - remote worker / Docker worker / Parallels workerの制御
 - 元実装と移植実装の意味論的等価性検証
 
@@ -75,6 +78,7 @@ fixtures/hello-c/dist/<target>/
 ├── plan.json
 ├── build.log
 ├── manifest.json
+├── sysroot.lock.json       # managed sysroot使用時
 └── artifacts/
     ├── miruri-hello
     └── libgreeting.a
@@ -82,25 +86,74 @@ fixtures/hello-c/dist/<target>/
 
 `manifest.json`の`assurance`が`statically-validated`でも、対象バイナリは実行していません。CPU形式とartifact closureに関する静的保証です。
 
-## クロス成果物
+## クロス成果物とmanaged sysroot
 
-クロスターゲットでは、Clang/LLDと対象sysrootが必要です。
-
-```bash
-./bin/miruri build \
-  --target linux-arm64 \
-  --sysroot /opt/miruri/sysroots/linux-arm64 \
-  path/to/project
-```
-
-環境変数でも指定できます。
+Linuxクロスターゲットでは、`--sysroot`を省略するとMiruriがtrusted provider registryから対象architectureの開発rootfsを自動取得します。
 
 ```bash
-export MIRURI_SYSROOT_LINUX_ARM64=/opt/miruri/sysroots/linux-arm64
 ./bin/miruri build --target linux-arm64 path/to/project
 ```
 
+初回のみOCI image indexを解決してlayerを取得し、manifest/config/layer digestをSHA-256で検証して展開します。Docker daemon、container実行、QEMU、target側package managerは使用せず、target codeも実行しません。選択したimmutable manifest digestはtarget別にlockされ、通常の再実行では同じrootfsを再利用します。blob cacheは再利用前に再ハッシュされ、rootfsが不完全な場合はonline buildで同じdigestから自動再構築します。`--offline`ではcacheを書き換えず明示的に失敗します。
+
+組み込みprovider:
+
+- `linux-x86_64`: `docker.io/library/buildpack-deps:bookworm` / `linux/amd64`
+- `linux-arm64`: `docker.io/library/buildpack-deps:bookworm` / `linux/arm64`
+- `linux-ppc64le`: `docker.io/library/buildpack-deps:bookworm` / `linux/ppc64le`
+- `linux-riscv64`: `docker.io/library/buildpack-deps:trixie` / `linux/riscv64`
+- `linux-riscv32`: trusted provider未登録のためmanual sysroot
+
+事前取得とcache確認:
+
+```bash
+./bin/miruri sysroot providers
+./bin/miruri sysroot ensure --target linux-arm64
+./bin/miruri sysroot list
+./bin/miruri sysroot path --target linux-arm64
+```
+
+networkを禁止してlock済みcacheだけを使う場合:
+
+```bash
+./bin/miruri build --target linux-arm64 --offline path/to/project
+```
+
+provider tagを再解決してtarget lockを更新する場合:
+
+```bash
+./bin/miruri build --target linux-arm64 --refresh-sysroot path/to/project
+```
+
+cache rootは`--cache-dir`または`MIRURI_CACHE_DIR`で変更できます。指定しない場合はOSのuser cache配下の`miruri/`を使用します。artifact setには選択したprovider、platform、manifest digest、layer digestを記録した`sysroot.lock.json`がコピーされます。
+
+解決優先順位は次のとおりです。
+
+1. `--sysroot`
+2. `MIRURI_SYSROOT_<TARGET>`
+3. target別にlockされたmanaged sysroot
+4. trusted providerからの自動provisioning
+
+manual sysrootも従来どおり利用できます。
+
+```bash
+export MIRURI_SYSROOT_LINUX_RISCV32=/opt/miruri/sysroots/linux-riscv32
+./bin/miruri build --target linux-riscv32 path/to/project
+```
+
+M1 MacでPATH外のHomebrew LLVMを使う場合は、Miruriが`/opt/homebrew/opt/llvm/bin`を自動探索します。別prefixを使う場合は`MIRURI_LLVM_PREFIX`を指定します。foreign Linux artifactではhost側の`ar`/`ranlib`/`strip`へfallbackせず、`llvm-ar`と`llvm-ranlib`を必須にしてhost object formatの混入を防ぎます。
+
 macOS成果物はmacOS + Apple SDK、Windows成果物はWindows + Windows SDKを持つbuild workerで生成する方針です。MiruriはSDKのライセンス条件を迂回しません。
+
+## Autotools hotfix
+
+Git checkoutに`configure.ac` / `configure.in`があり`configure`が未生成の場合、Miruriはisolated source overlay内で`autoreconf -fi`を実行し、その後out-of-treeで`configure`と`make`を実行します。既存の`Makefile`が同時に存在してもAutotoolsを優先し、別ターゲット向けに残ったconfigure結果を再利用しません。
+
+```bash
+./bin/miruri build --target macos-arm64 path/to/autotools-project
+```
+
+クロスターゲットでは`--host=<target-triple>`と、`config.guess`が利用できる場合は`--build=<host-triple>`を自動指定し、`CC` / `CXX` / `AR` / `RANLIB` / `STRIP` / sysroot / pkg-config環境を既存toolchainから引き継ぎます。macOS native buildではHomebrewのkeg-only packageにあるpkg-config metadataとgettext等のaclocal macroも探索します。
 
 ## Codex repair loop
 
@@ -109,7 +162,6 @@ Codex CLIにChatGPTアカウントでログイン済みの場合、失敗したb
 ```bash
 ./bin/miruri build \
   --target linux-arm64 \
-  --sysroot /opt/miruri/sysroots/linux-arm64 \
   --codex \
   --max-repairs 2 \
   path/to/project
@@ -153,7 +205,6 @@ dist/<target>/codex/attempt-01/
 ```bash
 ./bin/miruri port \
   --target linux-x86_64 \
-  --sysroot ~/miruri-sysroots/linux-x86_64 \
   --keep-work \
   path/to/windows-project
 ```
@@ -165,7 +216,6 @@ dist/<target>/codex/attempt-01/
 ```bash
 ./bin/miruri build \
   --target linux-x86_64 \
-  --sysroot ~/miruri-sysroots/linux-x86_64 \
   --codex \
   --codex-mode auto \
   --max-repairs 12 \

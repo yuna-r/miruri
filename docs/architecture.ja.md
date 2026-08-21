@@ -94,6 +94,36 @@ CPU ISAとは独立したcontent artifact:
 - Windows resource / manifest / installer
 - Linux package metadata
 
+### Managed Sysroot Boundary
+
+Linux cross buildでは、Target Realmのheader・startup object・C/C++ runtimeをmanaged sysrootとして供給します。sysroot provisioning自体はHost Realmのnetwork/filesystem処理ですが、image内のexecutableやpackage managerは一切起動しません。
+
+```text
+trusted provider declaration
+        │
+        ▼
+OCI index ── select exact linux/<arch>
+        │
+        ▼
+manifest/config/layer SHA-256 verification
+        │
+        ▼
+safe overlay extraction
+        │
+        ├─ whiteout semantics
+        ├─ path traversal rejection
+        ├─ absolute symlink rebasing
+        └─ device/FIFO omission
+        │
+        ▼
+content-addressed rootfs + target ref
+        │
+        ▼
+Clang --target/--sysroot/--gcc-toolchain + LLD
+```
+
+provider tagは発見用であり、buildの再現性境界は選択後のimmutable manifest digestです。通常buildはtarget refを再利用し、明示的なrefreshだけがtagを再解決します。artifact setへ`sysroot.lock.json`をコピーし、source、platform、manifest/config/layer digestを保存します。
+
 ## 5. Target Contract
 
 Target Profileは以下の直積ではなく、能力集合として表現します。

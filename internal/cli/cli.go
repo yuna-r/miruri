@@ -20,11 +20,12 @@ import (
 	artifactinspect "github.com/yuna-r/miruri/internal/inspect"
 	"github.com/yuna-r/miruri/internal/model"
 	"github.com/yuna-r/miruri/internal/planner"
+	"github.com/yuna-r/miruri/internal/sysroot"
 	"github.com/yuna-r/miruri/internal/target"
 )
 
 var (
-	Version = "0.1.0-alpha.7"
+	Version = "0.1.0-alpha.8.2"
 	Commit  = "dev"
 	Date    = "unknown"
 )
@@ -47,6 +48,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "codex":
 		return runCodex(args[1:], stdout, stderr)
+	case "sysroot":
+		return runSysroot(args[1:], stdout, stderr)
 	case "analyze":
 		return runAnalyze(args[1:], stdout, stderr)
 	case "plan":
@@ -164,6 +167,198 @@ func runCodex(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runSysroot(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		printSysrootHelp(stdout)
+		return 0
+	}
+	subcommand := args[0]
+	args = args[1:]
+	switch subcommand {
+	case "providers":
+		set := flag.NewFlagSet("sysroot providers", flag.ContinueOnError)
+		set.SetOutput(stderr)
+		jsonOutput := set.Bool("json", false, "print JSON")
+		if err := set.Parse(args); err != nil {
+			return 2
+		}
+		providers := sysroot.BuiltinProviders()
+		if *jsonOutput {
+			return writeJSON(stdout, stderr, providers)
+		}
+		for _, provider := range providers {
+			fmt.Fprintf(stdout, "%-20s %-44s %s\n", provider.TargetID, provider.Image, sysroot.PlatformString(provider))
+		}
+		return 0
+	case "ensure":
+		set := flag.NewFlagSet("sysroot ensure", flag.ContinueOnError)
+		set.SetOutput(stderr)
+		targetID := set.String("target", "", "target profile ID (required)")
+		cacheDir := set.String("cache-dir", "", "Miruri cache root")
+		offline := set.Bool("offline", false, "forbid registry access")
+		refresh := set.Bool("refresh", false, "resolve the provider tag again and update the target lock")
+		timeout := set.Duration("timeout", 45*time.Minute, "registry and extraction timeout")
+		jsonOutput := set.Bool("json", false, "print JSON")
+		if err := set.Parse(args); err != nil {
+			return 2
+		}
+		if strings.TrimSpace(*targetID) == "" {
+			fmt.Fprintln(stderr, "miruri sysroot ensure: --target is required")
+			return 2
+		}
+		profile, err := target.Resolve(*targetID)
+		if err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot ensure:", err)
+			return 1
+		}
+		manager := sysroot.New(sysroot.Options{CacheDir: *cacheDir, Progress: stderr})
+		ensureContext, cancel := context.WithTimeout(context.Background(), *timeout)
+		resolution, err := manager.Ensure(ensureContext, profile, sysroot.EnsureOptions{Offline: *offline, Refresh: *refresh})
+		cancel()
+		if err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot ensure:", err)
+			return 1
+		}
+		if *jsonOutput {
+			return writeJSON(stdout, stderr, resolution)
+		}
+		fmt.Fprintf(stdout, "Target:   %s\n", resolution.TargetID)
+		fmt.Fprintf(stdout, "Path:     %s\n", resolution.Path)
+		fmt.Fprintf(stdout, "Provider: %s\n", resolution.Provider)
+		fmt.Fprintf(stdout, "Source:   %s\n", resolution.Source)
+		fmt.Fprintf(stdout, "Digest:   %s\n", resolution.ManifestDigest)
+		fmt.Fprintf(stdout, "Lock:     %s\n", resolution.LockFile)
+		return 0
+	case "list":
+		set := flag.NewFlagSet("sysroot list", flag.ContinueOnError)
+		set.SetOutput(stderr)
+		cacheDir := set.String("cache-dir", "", "Miruri cache root")
+		jsonOutput := set.Bool("json", false, "print JSON")
+		if err := set.Parse(args); err != nil {
+			return 2
+		}
+		manager := sysroot.New(sysroot.Options{CacheDir: *cacheDir})
+		resolutions, err := manager.List()
+		if err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot list:", err)
+			return 1
+		}
+		if *jsonOutput {
+			return writeJSON(stdout, stderr, resolutions)
+		}
+		for _, resolution := range resolutions {
+			fmt.Fprintf(stdout, "%-20s %-24s %s\n", resolution.TargetID, shortCLIValue(resolution.ManifestDigest, 24), resolution.Path)
+		}
+		return 0
+	case "path":
+		set := flag.NewFlagSet("sysroot path", flag.ContinueOnError)
+		set.SetOutput(stderr)
+		targetID := set.String("target", "", "target profile ID (required)")
+		cacheDir := set.String("cache-dir", "", "Miruri cache root")
+		jsonOutput := set.Bool("json", false, "print JSON")
+		if err := set.Parse(args); err != nil {
+			return 2
+		}
+		if strings.TrimSpace(*targetID) == "" {
+			fmt.Fprintln(stderr, "miruri sysroot path: --target is required")
+			return 2
+		}
+		profile, err := target.Resolve(*targetID)
+		if err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot path:", err)
+			return 1
+		}
+		manager := sysroot.New(sysroot.Options{CacheDir: *cacheDir})
+		resolution, found, err := manager.Lookup(profile)
+		if err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot path:", err)
+			return 1
+		}
+		if !found {
+			fmt.Fprintf(stderr, "miruri sysroot path: no managed sysroot is locked for %s\n", profile.ID)
+			return 1
+		}
+		if *jsonOutput {
+			return writeJSON(stdout, stderr, resolution)
+		}
+		fmt.Fprintln(stdout, resolution.Path)
+		return 0
+	case "remove":
+		set := flag.NewFlagSet("sysroot remove", flag.ContinueOnError)
+		set.SetOutput(stderr)
+		targetID := set.String("target", "", "target profile ID (required)")
+		cacheDir := set.String("cache-dir", "", "Miruri cache root")
+		purge := set.Bool("purge", false, "also remove the unreferenced content-addressed rootfs")
+		if err := set.Parse(args); err != nil {
+			return 2
+		}
+		if strings.TrimSpace(*targetID) == "" {
+			fmt.Fprintln(stderr, "miruri sysroot remove: --target is required")
+			return 2
+		}
+		profile, err := target.Resolve(*targetID)
+		if err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot remove:", err)
+			return 1
+		}
+		manager := sysroot.New(sysroot.Options{CacheDir: *cacheDir})
+		if err := manager.Remove(profile.ID, *purge); err != nil {
+			fmt.Fprintln(stderr, "miruri sysroot remove:", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Removed managed sysroot lock for %s\n", profile.ID)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "miruri sysroot: unknown subcommand %q\n\n", subcommand)
+		printSysrootHelp(stderr)
+		return 2
+	}
+}
+
+func resolvePlanSysroot(profile model.TargetProfile, explicit, cacheDir string) (string, bool, error) {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		if absolute, err := filepath.Abs(explicit); err == nil {
+			return absolute, false, nil
+		}
+		return explicit, false, nil
+	}
+	if environment := strings.TrimSpace(os.Getenv(sysroot.EnvName(profile.ID))); environment != "" {
+		if absolute, err := filepath.Abs(environment); err == nil {
+			return absolute, false, nil
+		}
+		return environment, false, nil
+	}
+	manager := sysroot.New(sysroot.Options{CacheDir: cacheDir})
+	if resolution, found, err := manager.Lookup(profile); err != nil {
+		return "", false, err
+	} else if found {
+		return resolution.Path, true, nil
+	}
+	_, automatic := manager.Provider(profile)
+	automatic = automatic && profile.RequiresSysroot && !target.IsNative(profile)
+	return "", automatic, nil
+}
+
+func shortCLIValue(value string, length int) string {
+	if len(value) <= length {
+		return value
+	}
+	return value[:length]
+}
+
+func printSysrootHelp(out io.Writer) {
+	fmt.Fprint(out, `Usage:
+  miruri sysroot providers [--json]
+  miruri sysroot ensure --target <target> [--refresh] [--offline]
+  miruri sysroot list [--json]
+  miruri sysroot path --target <target> [--json]
+  miruri sysroot remove --target <target> [--purge]
+
+Managed sysroots are pulled as OCI image layers, verified by SHA-256, expanded
+without running target code, and pinned by an immutable manifest digest.
+`)
+}
+
 func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	set := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	set.SetOutput(stderr)
@@ -195,7 +390,8 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	set := flag.NewFlagSet("plan", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	targetID := set.String("target", "host", "target profile ID")
-	sysroot := set.String("sysroot", "", "target sysroot path")
+	sysrootPath := set.String("sysroot", "", "target sysroot path; automatic managed sysroot is used when omitted")
+	cacheDir := set.String("cache-dir", "", "Miruri cache root; default: MIRURI_CACHE_DIR or the OS user cache")
 	jsonOutput := set.Bool("json", false, "print JSON")
 	output := set.String("output", "", "write full JSON plan to a file")
 	if err := set.Parse(args); err != nil {
@@ -211,7 +407,15 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "miruri plan:", err)
 		return 1
 	}
-	plan := planner.Create(report, profile, *sysroot)
+	resolvedSysroot, automaticSysroot, err := resolvePlanSysroot(profile, *sysrootPath, *cacheDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri plan:", err)
+		return 1
+	}
+	plan := planner.CreateWithOptions(report, profile, planner.Options{
+		Sysroot:          resolvedSysroot,
+		AutomaticSysroot: automaticSysroot,
+	})
 	if *output != "" {
 		if err := fsutil.WriteJSON(*output, plan); err != nil {
 			fmt.Fprintln(stderr, "miruri plan:", err)
@@ -232,7 +436,11 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	set := flag.NewFlagSet("build", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	targetID := set.String("target", "host", "target profile ID")
-	sysroot := set.String("sysroot", "", "target sysroot path")
+	sysrootPath := set.String("sysroot", "", "target sysroot path; automatic managed sysroot is used when omitted")
+	cacheDir := set.String("cache-dir", "", "Miruri cache root; default: MIRURI_CACHE_DIR or the OS user cache")
+	offline := set.Bool("offline", false, "forbid registry access and require an already cached managed sysroot")
+	refreshSysroot := set.Bool("refresh-sysroot", false, "resolve the provider tag again and update the target sysroot lock")
+	sysrootTimeout := set.Duration("sysroot-timeout", 45*time.Minute, "timeout for managed sysroot provisioning")
 	outDir := set.String("out", "", "output directory; default: <project>/dist")
 	generator := set.String("generator", "", "CMake generator; default: Ninja when available")
 	useCodex := set.Bool("codex", false, "allow Codex portability work in the isolated source overlay")
@@ -267,24 +475,28 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	project := positionalPath(set.Args())
 	result, err := builder.Build(context.Background(), builder.Config{
-		ProjectDir:   project,
-		Target:       profile,
-		Sysroot:      *sysroot,
-		OutDir:       *outDir,
-		Generator:    *generator,
-		UseCodex:     *useCodex,
-		CodexMode:    codexMode,
-		MaxRepairs:   *maxRepairs,
-		CodexBinary:  *codexBin,
-		CodexModel:   *codexModel,
-		CodexProfile: *codexProfile,
-		CodexAuth:    authMode,
-		CodexTimeout: *codexTimeout,
-		KeepWork:     *keepWork,
-		DryRun:       *dryRun,
-		Version:      Version,
-		Timeout:      *timeout,
-		Progress:     stderr,
+		ProjectDir:     project,
+		Target:         profile,
+		Sysroot:        *sysrootPath,
+		CacheDir:       *cacheDir,
+		Offline:        *offline,
+		RefreshSysroot: *refreshSysroot,
+		SysrootTimeout: *sysrootTimeout,
+		OutDir:         *outDir,
+		Generator:      *generator,
+		UseCodex:       *useCodex,
+		CodexMode:      codexMode,
+		MaxRepairs:     *maxRepairs,
+		CodexBinary:    *codexBin,
+		CodexModel:     *codexModel,
+		CodexProfile:   *codexProfile,
+		CodexAuth:      authMode,
+		CodexTimeout:   *codexTimeout,
+		KeepWork:       *keepWork,
+		DryRun:         *dryRun,
+		Version:        Version,
+		Timeout:        *timeout,
+		Progress:       stderr,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "miruri build:", err)
@@ -295,6 +507,15 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Miruri artifact set: %s\n", result.PackageDir)
 	fmt.Fprintf(stdout, "Target:              %s\n", result.Manifest.Target.ID)
+	if result.Manifest.Sysroot != nil {
+		fmt.Fprintf(stdout, "Sysroot mode:        %s\n", result.Manifest.Sysroot.Mode)
+		if result.Manifest.Sysroot.Path != "" {
+			fmt.Fprintf(stdout, "Sysroot:             %s\n", result.Manifest.Sysroot.Path)
+		}
+		if result.Manifest.Sysroot.ManifestDigest != "" {
+			fmt.Fprintf(stdout, "Sysroot digest:      %s\n", result.Manifest.Sysroot.ManifestDigest)
+		}
+	}
 	fmt.Fprintf(stdout, "Assurance:           %s\n", result.Manifest.Assurance)
 	fmt.Fprintf(stdout, "Artifacts:           %d\n", len(result.Manifest.Artifacts))
 	fmt.Fprintf(stdout, "Codex repairs:       %d\n", len(result.Manifest.CodexRepairs))
@@ -500,6 +721,7 @@ Commands:
   plan      select portability strategies for a target contract
   build     create an isolated target artifact set without executing it
   port      perform an authorized full platform port with Codex, then build
+  sysroot   provision and manage verified cross-Linux sysroots
   inspect   inspect one ELF, Mach-O, PE or archive artifact
   doctor    inspect the local build environment
   codex     verify Codex CLI installation and ChatGPT authentication
@@ -510,15 +732,16 @@ Examples:
   %s analyze .
   %s plan --target linux-riscv64 .
   %s build --target host fixtures/hello-c
+  %s sysroot ensure --target linux-arm64
+  %s build --target linux-arm64 .
+  %s build --target linux-arm64 --offline --codex .
+  %s port --target linux-x86_64 ./windows-app
+  %s build --target linux-riscv32 --sysroot /opt/sysroots/riscv32 .
   %s codex status
   %s inspect --target host dist/host/artifacts/program
-  %s build --target linux-arm64 --sysroot /opt/sysroots/aarch64 .
-  %s build --target linux-arm64 --sysroot /opt/sysroots/aarch64 --codex .
-  %s port --target linux-x86_64 --sysroot /opt/sysroots/x86_64 ./windows-app
 
-Miruri v0.1 supports CMake and Make projects. GUI, graphics, shader, audio,
-input, plugin and asset requirements are represented from the first release,
-while the initial builders focus on producing and statically inspecting linked
-C/C++ artifacts.
-`, name, name, name, name, name, name, name, name, name, name)
+Miruri v0.1 supports CMake, Meson, Autotools, and Make projects. Trusted cross-Linux profiles use
+managed OCI sysroots by default. GUI, graphics, shader, audio, input, plugin and
+asset requirements remain represented independently from the initial builders.
+`, name, name, name, name, name, name, name, name, name, name, name, name)
 }

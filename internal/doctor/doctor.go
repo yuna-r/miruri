@@ -3,6 +3,7 @@ package doctor
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -28,15 +29,19 @@ type Report struct {
 func Run() Report {
 	definitions := []Check{
 		{Name: "git", Required: true, Purpose: "source control and patch review"},
-		{Name: "clang", Required: true, Purpose: "C/C++ frontend and code generation"},
+		{Name: "clang", Required: true, Purpose: "C frontend and target code generation"},
+		{Name: "clang++", Required: true, Purpose: "C++ frontend and target code generation"},
 		{Name: "cmake", Required: false, Purpose: "CMake projects"},
 		{Name: "ninja", Required: false, Purpose: "preferred CMake build backend"},
-		{Name: "make", Required: false, Purpose: "Make projects"},
+		{Name: "make", Required: false, Purpose: "Make and Autotools projects"},
+		{Name: "autoreconf", Required: false, Purpose: "bootstrap Autotools Git source trees"},
+		{Name: "pkg-config", Required: false, Purpose: "Autotools dependency discovery"},
 		{Name: "llvm-ar", Required: false, Purpose: "cross-target static archives"},
 		{Name: "llvm-ranlib", Required: false, Purpose: "cross-target archive index"},
 		{Name: "llvm-strip", Required: false, Purpose: "target artifact stripping"},
+		{Name: "ld.lld", Required: false, Purpose: "cross-Linux linking"},
 		{Name: "codex", Required: false, Purpose: "constrained portability repair agent"},
-		{Name: "docker", Required: false, Purpose: "Linux artifact worker"},
+		{Name: "docker", Required: false, Purpose: "isolated build worker; not required for managed sysroots"},
 	}
 	if runtime.GOOS == "darwin" {
 		definitions = append(definitions, Check{Name: "xcrun", Required: true, Purpose: "Apple SDK and tool discovery"})
@@ -47,7 +52,7 @@ func Run() Report {
 
 	report := Report{HostOS: runtime.GOOS, HostArch: runtime.GOARCH, Ready: true}
 	for _, check := range definitions {
-		path, err := exec.LookPath(check.Name)
+		path, err := lookTool(check.Name)
 		check.Found = err == nil
 		if check.Found {
 			check.Path = path
@@ -82,10 +87,25 @@ func Run() Report {
 func TargetNotes(profile model.TargetProfile) []string {
 	var notes []string
 	if profile.RequiresSysroot {
-		notes = append(notes, "A target sysroot may be required when the target differs from the current host.")
+		notes = append(notes, "A target sysroot is required when the target differs from the current host; trusted Linux profiles can be provisioned automatically.")
 	}
 	if profile.RequiresPlatformSDK {
 		notes = append(notes, "A matching platform SDK and build worker are required.")
 	}
 	return notes
+}
+
+func lookTool(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	if runtime.GOOS == "darwin" {
+		for _, directory := range []string{"/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin"} {
+			candidate := filepath.Join(directory, name)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, nil
+			}
+		}
+	}
+	return "", exec.ErrNotFound
 }

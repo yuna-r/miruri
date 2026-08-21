@@ -15,8 +15,8 @@
 
 ## v0.2 — Environment and dependency resolver
 
-- sysroot lock and content-addressed store
-- trusted provider registry
+- [x] sysroot lock and content-addressed store (`v0.1.0-alpha.8`で先行実装)
+- [x] trusted provider registry (`v0.1.0-alpha.8`でLinux組み込みproviderを先行実装)
 - source dependency rebuild
 - SBOM and license closure
 - Docker Linux worker
@@ -77,3 +77,13 @@
 
 - macOS SDKの破損・古いCommand Line Tools設定がGo単体テストを壊さないようにする。
 - `miruri doctor` が実際に利用可能なmacOS SDKを検証する。
+
+
+## v0.1.0-alpha.8: Managed OCI sysroot
+
+- Linux cross targetの`--sysroot`省略時にtrusted providerを自動選択する。
+- OCI imageを実行せず、manifest indexからtarget architectureを選択してlayerを展開する。
+- manifest/config/layer digestを検証し、whiteoutとsymlink境界を安全に処理する。
+- content-addressed store、target lock、offline reuse、explicit refreshを提供する。
+- sysroot内GCC runtimeとhost Clang/LLDをCMake/Makeへ自動配線する。
+- `sysroot.lock.json`とmanifestへprovider/toolchain provenanceを保存する。

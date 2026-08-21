@@ -11,7 +11,16 @@ import (
 	"github.com/yuna-r/miruri/internal/target"
 )
 
+type Options struct {
+	Sysroot          string
+	AutomaticSysroot bool
+}
+
 func Create(analysis model.AnalysisReport, targetProfile model.TargetProfile, sysroot string) model.PortingPlan {
+	return CreateWithOptions(analysis, targetProfile, Options{Sysroot: sysroot})
+}
+
+func CreateWithOptions(analysis model.AnalysisReport, targetProfile model.TargetProfile, options Options) model.PortingPlan {
 	provided := make(map[string]bool, len(targetProfile.Capabilities))
 	for _, capability := range targetProfile.Capabilities {
 		provided[capability] = true
@@ -35,7 +44,7 @@ func Create(analysis model.AnalysisReport, targetProfile model.TargetProfile, sy
 		}
 	}
 
-	plan.Environment = environmentRequirements(analysis, targetProfile, sysroot)
+	plan.Environment = environmentRequirements(analysis, targetProfile, options)
 	for _, requirement := range plan.Environment {
 		if requirement.Required && strings.Contains(strings.ToLower(requirement.Reason), "missing") {
 			if plan.Status == "ready" {
@@ -188,7 +197,7 @@ func selectStrategy(req model.CapabilityRequirement, targetProfile model.TargetP
 	return item
 }
 
-func environmentRequirements(analysis model.AnalysisReport, p model.TargetProfile, sysroot string) []model.EnvironmentRequirement {
+func environmentRequirements(analysis model.AnalysisReport, p model.TargetProfile, options Options) []model.EnvironmentRequirement {
 	buildTools := map[model.BuildSystem]string{
 		model.BuildSystemCMake:     "cmake and a build backend such as Ninja",
 		model.BuildSystemMake:      "make",
@@ -207,8 +216,12 @@ func environmentRequirements(analysis model.AnalysisReport, p model.TargetProfil
 	}
 	if p.RequiresSysroot && !target.IsNative(p) {
 		reason := "target headers, C runtime objects and libraries"
-		if sysroot == "" {
-			reason = "missing: target headers, C runtime objects and libraries; pass --sysroot or MIRURI_SYSROOT_<TARGET>"
+		if options.Sysroot == "" {
+			if options.AutomaticSysroot {
+				reason = "trusted managed sysroot provider is available and will be provisioned during build"
+			} else {
+				reason = "missing: target headers, C runtime objects and libraries; use an automatic provider, pass --sysroot, or set MIRURI_SYSROOT_<TARGET>"
+			}
 		}
 		requirements = append(requirements, model.EnvironmentRequirement{Name: "sysroot", Required: true, Reason: reason})
 	}

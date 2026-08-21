@@ -35,3 +35,65 @@ exit 9
 		t.Fatalf("unexpected output:\n%s", stdout.String())
 	}
 }
+
+func TestSysrootProvidersCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"sysroot", "providers"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("unexpected exit %d: %s", code, stderr.String())
+	}
+	for _, targetID := range []string{"linux-x86_64", "linux-arm64", "linux-ppc64le", "linux-riscv64"} {
+		if !strings.Contains(stdout.String(), targetID) {
+			t.Fatalf("provider output missing %s:\n%s", targetID, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "linux-riscv32") {
+		t.Fatalf("riscv32 should remain manual-only:\n%s", stdout.String())
+	}
+}
+
+func TestPlanReportsAutomaticSysrootProvider(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate test source")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+	fixture := filepath.Join(repoRoot, "fixtures", "hello-c")
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"plan",
+		"--target", "linux-ppc64le",
+		"--cache-dir", t.TempDir(),
+		fixture,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("unexpected exit %d: %s\n%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "trusted managed sysroot provider") {
+		t.Fatalf("automatic sysroot was not reported:\n%s", stdout.String())
+	}
+}
+
+func TestBuildDryRunUsesManagedSysrootProvider(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate test source")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+	fixture := filepath.Join(repoRoot, "fixtures", "hello-c")
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"build",
+		"--target", "linux-arm64",
+		"--cache-dir", t.TempDir(),
+		"--out", t.TempDir(),
+		"--dry-run",
+		fixture,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("unexpected exit %d: %s\n%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Sysroot mode:        managed-pending") {
+		t.Fatalf("managed dry-run sysroot missing:\n%s", stdout.String())
+	}
+}

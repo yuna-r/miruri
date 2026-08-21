@@ -23,28 +23,33 @@ import (
 	"github.com/yuna-r/miruri/internal/model"
 	"github.com/yuna-r/miruri/internal/planner"
 	"github.com/yuna-r/miruri/internal/repairworkspace"
+	"github.com/yuna-r/miruri/internal/sysroot"
 	"github.com/yuna-r/miruri/internal/target"
 )
 
 type Config struct {
-	ProjectDir   string
-	Target       model.TargetProfile
-	Sysroot      string
-	OutDir       string
-	Generator    string
-	UseCodex     bool
-	CodexMode    codex.TaskMode
-	MaxRepairs   int
-	CodexBinary  string
-	CodexModel   string
-	CodexProfile string
-	CodexAuth    codex.AuthMode
-	CodexTimeout time.Duration
-	KeepWork     bool
-	DryRun       bool
-	Version      string
-	Timeout      time.Duration
-	Progress     io.Writer
+	ProjectDir     string
+	Target         model.TargetProfile
+	Sysroot        string
+	CacheDir       string
+	Offline        bool
+	RefreshSysroot bool
+	SysrootTimeout time.Duration
+	OutDir         string
+	Generator      string
+	UseCodex       bool
+	CodexMode      codex.TaskMode
+	MaxRepairs     int
+	CodexBinary    string
+	CodexModel     string
+	CodexProfile   string
+	CodexAuth      codex.AuthMode
+	CodexTimeout   time.Duration
+	KeepWork       bool
+	DryRun         bool
+	Version        string
+	Timeout        time.Duration
+	Progress       io.Writer
 }
 
 type Result struct {
@@ -55,19 +60,22 @@ type Result struct {
 }
 
 type buildContext struct {
-	config       Config
-	analysis     model.AnalysisReport
-	plan         model.PortingPlan
-	buildSystem  model.BuildSystem
-	projectAbs   string
-	workDir      string
-	sourceDir    string
-	buildDir     string
-	packageDir   string
-	logPath      string
-	logBuffer    bytes.Buffer
-	codexRepairs []model.CodexRepairAttempt
-	repairRepo   *repairworkspace.Repository
+	config          Config
+	analysis        model.AnalysisReport
+	plan            model.PortingPlan
+	buildSystem     model.BuildSystem
+	projectAbs      string
+	workDir         string
+	sourceDir       string
+	buildDir        string
+	packageDir      string
+	logPath         string
+	logBuffer       bytes.Buffer
+	codexRepairs    []model.CodexRepairAttempt
+	repairRepo      *repairworkspace.Repository
+	sysrootInfo     sysroot.Resolution
+	sysrootLockPath string
+	toolchain       llvmToolchain
 }
 
 func Build(ctx context.Context, config Config) (Result, error) {
@@ -85,6 +93,9 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	if config.Timeout <= 0 {
 		config.Timeout = 30 * time.Minute
 	}
+	if config.SysrootTimeout <= 0 {
+		config.SysrootTimeout = 45 * time.Minute
+	}
 	projectAbs, err := filepath.Abs(config.ProjectDir)
 	if err != nil {
 		return Result{}, err
@@ -93,9 +104,23 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	resolvedSysroot := resolveSysroot(config.Target, config.Sysroot)
-	config.Sysroot = resolvedSysroot
-	portingPlan := planner.Create(analysisReport, config.Target, resolvedSysroot)
+	var sysrootLog bytes.Buffer
+	var sysrootProgress io.Writer = &sysrootLog
+	if config.Progress != nil {
+		sysrootProgress = io.MultiWriter(&sysrootLog, config.Progress)
+	}
+	sysrootManager := sysroot.New(sysroot.Options{CacheDir: config.CacheDir, Progress: sysrootProgress})
+	sysrootContext, cancelSysroot := context.WithTimeout(ctx, config.SysrootTimeout)
+	sysrootInfo, automaticSysroot, err := resolveSysroot(sysrootContext, config, sysrootManager)
+	cancelSysroot()
+	if err != nil {
+		return Result{}, err
+	}
+	config.Sysroot = sysrootInfo.Path
+	portingPlan := planner.CreateWithOptions(analysisReport, config.Target, planner.Options{
+		Sysroot:          config.Sysroot,
+		AutomaticSysroot: automaticSysroot,
+	})
 	buildSystem, err := chooseBuildSystem(analysisReport.BuildSystems)
 	if err != nil {
 		return Result{}, err
@@ -117,12 +142,9 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		return Result{}, err
 	}
 
-	cacheRoot, err := os.UserCacheDir()
-	if err != nil || cacheRoot == "" {
-		cacheRoot = os.TempDir()
-	}
+	cacheRoot := sysrootManager.CacheDir()
 	projectHash := sha256.Sum256([]byte(projectAbs))
-	workDir := filepath.Join(cacheRoot, "miruri", "work", hex.EncodeToString(projectHash[:8]), config.Target.ID)
+	workDir := filepath.Join(cacheRoot, "work", hex.EncodeToString(projectHash[:8]), config.Target.ID)
 	if err := os.RemoveAll(workDir); err != nil {
 		return Result{}, fmt.Errorf("clean work directory: %w", err)
 	}
@@ -132,17 +154,38 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		return Result{}, err
 	}
 
+	sysrootLockPath := ""
+	if sysrootInfo.LockFile != "" {
+		sysrootLockPath = filepath.Join(packageDir, "sysroot.lock.json")
+		if err := fsutil.CopyFile(sysrootInfo.LockFile, sysrootLockPath, 0o644); err != nil {
+			return Result{}, fmt.Errorf("copy sysroot lock into artifact set: %w", err)
+		}
+	}
+
 	bc := &buildContext{
-		config:      config,
-		analysis:    analysisReport,
-		plan:        portingPlan,
-		buildSystem: buildSystem,
-		projectAbs:  projectAbs,
-		workDir:     workDir,
-		sourceDir:   sourceDir,
-		buildDir:    buildDir,
-		packageDir:  packageDir,
-		logPath:     filepath.Join(packageDir, "build.log"),
+		config:          config,
+		analysis:        analysisReport,
+		plan:            portingPlan,
+		buildSystem:     buildSystem,
+		projectAbs:      projectAbs,
+		workDir:         workDir,
+		sourceDir:       sourceDir,
+		buildDir:        buildDir,
+		packageDir:      packageDir,
+		logPath:         filepath.Join(packageDir, "build.log"),
+		sysrootInfo:     sysrootInfo,
+		sysrootLockPath: sysrootLockPath,
+	}
+	_, _ = bc.logBuffer.Write(sysrootLog.Bytes())
+	if sysrootInfo.Mode != "" {
+		bc.logf("Miruri sysroot: selected mode=%s target=%s", sysrootInfo.Mode, config.Target.ID)
+		if sysrootInfo.ManifestDigest != "" {
+			bc.logf(" digest=%s", sysrootInfo.ManifestDigest)
+		}
+		if sysrootInfo.Path != "" {
+			bc.logf(" path=%s", sysrootInfo.Path)
+		}
+		bc.logf("\n")
 	}
 
 	analysisPath := filepath.Join(packageDir, "analysis.json")
@@ -158,6 +201,9 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		manifest := baseManifest(bc, analysisPath, planPath)
 		manifest.Assurance = model.AssuranceGenerated
 		manifest.Warnings = append(manifest.Warnings, "dry run: no compiler or linker was invoked")
+		if sysrootInfo.Mode == "managed-pending" {
+			manifest.Warnings = append(manifest.Warnings, "dry run: the managed sysroot provider was selected but no registry data was downloaded")
+		}
 		manifestPath := filepath.Join(packageDir, "manifest.json")
 		if err := fsutil.WriteJSON(manifestPath, manifest); err != nil {
 			return Result{}, err
@@ -165,7 +211,12 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		return Result{Manifest: manifest, ManifestPath: manifestPath, PackageDir: packageDir, WorkDir: workDir}, nil
 	}
 
-	if err := validateEnvironment(config.Target, resolvedSysroot); err != nil {
+	toolchain, err := discoverLLVMToolchain(config.Target, config.Sysroot)
+	if err != nil {
+		return Result{}, err
+	}
+	bc.toolchain = toolchain
+	if err := validateEnvironment(config.Target, config.Sysroot, toolchain); err != nil {
 		return Result{}, err
 	}
 	if err := fsutil.CopyTree(projectAbs, sourceDir); err != nil {
@@ -410,6 +461,10 @@ func (bc *buildContext) runBuild(parent context.Context) error {
 	switch bc.buildSystem {
 	case model.BuildSystemCMake:
 		return bc.runCMake(ctx)
+	case model.BuildSystemMeson:
+		return bc.runMeson(ctx)
+	case model.BuildSystemAutotools:
+		return bc.runAutotools(ctx)
 	case model.BuildSystemMake:
 		return bc.runMake(ctx)
 	default:
@@ -419,7 +474,7 @@ func (bc *buildContext) runBuild(parent context.Context) error {
 
 func (bc *buildContext) runCMake(ctx context.Context) error {
 	toolchainPath := filepath.Join(bc.workDir, "miruri-toolchain.cmake")
-	content := generateCMakeToolchain(bc.config.Target, bc.config.Sysroot)
+	content := generateCMakeToolchain(bc.config.Target, bc.config.Sysroot, bc.toolchain)
 	if err := os.WriteFile(toolchainPath, []byte(content), 0o644); err != nil {
 		return err
 	}
@@ -439,10 +494,209 @@ func (bc *buildContext) runCMake(ctx context.Context) error {
 		"-DCMAKE_BUILD_TYPE=Release",
 		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
 	}
-	if err := bc.runCommand(ctx, bc.workDir, nil, "cmake", configureArgs...); err != nil {
+	environment := bc.toolchainEnvironment()
+	if err := bc.runCommand(ctx, bc.workDir, environment, "cmake", configureArgs...); err != nil {
 		return err
 	}
-	return bc.runCommand(ctx, bc.workDir, nil, "cmake", "--build", bc.buildDir, "--parallel")
+	return bc.runCommand(ctx, bc.workDir, environment, "cmake", "--build", bc.buildDir, "--parallel")
+}
+
+func (bc *buildContext) runMeson(ctx context.Context) error {
+	environment := bc.mesonEnvironment()
+	setupArgs := []string{"setup", bc.buildDir, bc.sourceDir, "--buildtype=release"}
+	if !target.IsNative(bc.config.Target) {
+		crossFile := filepath.Join(bc.workDir, "miruri-meson-cross.ini")
+		content, err := generateMesonCrossFile(bc.config.Target, bc.config.Sysroot, bc.toolchain)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(crossFile, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write Meson cross file: %w", err)
+		}
+		setupArgs = append(setupArgs, "--cross-file", crossFile)
+	}
+	if err := bc.runCommand(ctx, bc.workDir, environment, "meson", setupArgs...); err != nil {
+		return fmt.Errorf("Meson setup failed: %w", err)
+	}
+	jobs := runtime.NumCPU()
+	if jobs > 8 {
+		jobs = 8
+	}
+	if err := bc.runCommand(ctx, bc.workDir, environment, "meson", "compile", "-C", bc.buildDir, "-j", fmt.Sprintf("%d", jobs)); err != nil {
+		return fmt.Errorf("Meson compile failed: %w", err)
+	}
+	return nil
+}
+
+func generateMesonCrossFile(profile model.TargetProfile, sysrootPath string, toolchain llvmToolchain) (string, error) {
+	if target.IsNative(profile) {
+		return "", nil
+	}
+	if toolchain.CC == "" || toolchain.CXX == "" {
+		return "", fmt.Errorf("Meson cross build requires Clang C/C++ compilers")
+	}
+
+	c := []string{toolchain.CC, "--target=" + profile.Triple}
+	cpp := []string{toolchain.CXX, "--target=" + profile.Triple}
+	if sysrootPath != "" {
+		flag := "--sysroot=" + sysrootPath
+		c = append(c, flag)
+		cpp = append(cpp, flag)
+	}
+	if toolchain.GCCToolchain != "" {
+		flag := "--gcc-toolchain=" + toolchain.GCCToolchain
+		c = append(c, flag)
+		cpp = append(cpp, flag)
+	}
+	if profile.DefaultLinker == "lld" && toolchain.Linker != "" {
+		c = append(c, "-fuse-ld=lld")
+		cpp = append(cpp, "-fuse-ld=lld")
+	}
+
+	var b strings.Builder
+	b.WriteString("[binaries]\n")
+	fmt.Fprintf(&b, "c = %s\n", mesonArray(c))
+	fmt.Fprintf(&b, "cpp = %s\n", mesonArray(cpp))
+	if toolchain.AR != "" {
+		fmt.Fprintf(&b, "ar = %s\n", mesonString(toolchain.AR))
+	}
+	if toolchain.Strip != "" {
+		fmt.Fprintf(&b, "strip = %s\n", mesonString(toolchain.Strip))
+	}
+	if pkg, err := exec.LookPath("pkg-config"); err == nil {
+		fmt.Fprintf(&b, "pkg-config = %s\n", mesonString(pkg))
+	} else if pkg, err := exec.LookPath("pkgconf"); err == nil {
+		fmt.Fprintf(&b, "pkg-config = %s\n", mesonString(pkg))
+	}
+	b.WriteString("\n[host_machine]\n")
+	fmt.Fprintf(&b, "system = %s\n", mesonString(mesonSystem(profile.OS)))
+	fmt.Fprintf(&b, "cpu_family = %s\n", mesonString(mesonCPUFamily(profile.Arch)))
+	fmt.Fprintf(&b, "cpu = %s\n", mesonString(mesonCPU(profile.Arch)))
+	b.WriteString("endian = 'little'\n")
+	if sysrootPath != "" {
+		b.WriteString("\n[properties]\n")
+		fmt.Fprintf(&b, "sys_root = %s\n", mesonString(sysrootPath))
+	}
+	return b.String(), nil
+}
+
+func mesonArray(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, mesonString(value))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func mesonString(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "'", "\\'")
+	return "'" + value + "'"
+}
+
+func mesonSystem(osName string) string {
+	switch strings.ToLower(osName) {
+	case "macos", "darwin":
+		return "darwin"
+	default:
+		return strings.ToLower(osName)
+	}
+}
+
+func mesonCPUFamily(arch string) string {
+	switch strings.ToLower(arch) {
+	case "arm64", "aarch64":
+		return "aarch64"
+	case "x86_64", "amd64", "x64":
+		return "x86_64"
+	case "riscv64", "riscv32":
+		return "riscv64"
+	case "ppc64le", "powerpc64le":
+		return "ppc64"
+	default:
+		return strings.ToLower(arch)
+	}
+}
+
+func mesonCPU(arch string) string {
+	switch strings.ToLower(arch) {
+	case "arm64":
+		return "aarch64"
+	case "amd64", "x64":
+		return "x86_64"
+	default:
+		return strings.ToLower(arch)
+	}
+}
+
+func (bc *buildContext) runAutotools(ctx context.Context) error {
+	environment := bc.autotoolsEnvironment()
+	if needsAutoreconf(bc.sourceDir) {
+		if err := bc.runCommand(ctx, bc.sourceDir, environment, "autoreconf", "-fi"); err != nil {
+			return fmt.Errorf("Autotools bootstrap failed: %w", err)
+		}
+	}
+
+	configurePath := filepath.Join(bc.sourceDir, "configure")
+	if info, err := os.Stat(configurePath); err != nil || info.IsDir() {
+		return fmt.Errorf("Autotools project has no generated configure script; install autoconf/automake/gettext development tools or provide a release source tree containing configure")
+	}
+
+	configureArgs := []string{configurePath}
+	if !target.IsNative(bc.config.Target) {
+		configureArgs = append(configureArgs, "--host="+bc.config.Target.Triple)
+		if buildTriplet := detectAutotoolsBuildTriplet(ctx, bc.sourceDir, environment); buildTriplet != "" {
+			configureArgs = append(configureArgs, "--build="+buildTriplet)
+		}
+	}
+	if err := bc.runCommand(ctx, bc.buildDir, environment, "sh", configureArgs...); err != nil {
+		return fmt.Errorf("Autotools configure failed: %w", err)
+	}
+
+	jobs := runtime.NumCPU()
+	if jobs > 8 {
+		jobs = 8
+	}
+	return bc.runCommand(ctx, bc.buildDir, environment, "make", fmt.Sprintf("-j%d", jobs))
+}
+
+func needsAutoreconf(sourceDir string) bool {
+	configurePath := filepath.Join(sourceDir, "configure")
+	configureInfo, configureErr := os.Stat(configurePath)
+	if configureErr != nil || configureInfo.IsDir() {
+		return existsAny(filepath.Join(sourceDir, "configure.ac"), filepath.Join(sourceDir, "configure.in"))
+	}
+	for _, input := range []string{"configure.ac", "configure.in", "Makefile.am"} {
+		info, err := os.Stat(filepath.Join(sourceDir, input))
+		if err == nil && info.ModTime().After(configureInfo.ModTime()) {
+			return true
+		}
+	}
+	return false
+}
+
+func existsAny(paths ...string) bool {
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func detectAutotoolsBuildTriplet(ctx context.Context, sourceDir string, environment []string) string {
+	guess := filepath.Join(sourceDir, "config.guess")
+	if info, err := os.Stat(guess); err != nil || info.IsDir() {
+		return ""
+	}
+	command := exec.CommandContext(ctx, "sh", guess)
+	command.Dir = sourceDir
+	command.Env = environment
+	output, err := command.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func (bc *buildContext) runMake(ctx context.Context) error {
@@ -453,20 +707,189 @@ func (bc *buildContext) runMake(ctx context.Context) error {
 	return bc.runCommand(ctx, bc.sourceDir, bc.makeEnvironment(), "make", fmt.Sprintf("-j%d", jobs))
 }
 
+func (bc *buildContext) toolchainEnvironment() []string {
+	environment := append([]string{}, os.Environ()...)
+	if bc.toolchain.BinDir != "" {
+		environment = setEnvironment(environment, "PATH", bc.toolchain.BinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	return environment
+}
+
+func (bc *buildContext) mesonEnvironment() []string {
+	environment := bc.makeEnvironment()
+	if runtime.GOOS == "darwin" && bc.config.Target.OS == "darwin" {
+		if sdk := discoverAppleSDK(); sdk != "" {
+			environment = setEnvironment(environment, "SDKROOT", sdk)
+			environment = appendCompilerFlag(environment, "CC", "-isysroot "+shellQuote(sdk))
+			environment = appendCompilerFlag(environment, "CXX", "-isysroot "+shellQuote(sdk))
+		}
+		if target.IsNative(bc.config.Target) {
+			environment = appendEnvironmentPath(environment, "PKG_CONFIG_PATH", homebrewGlobDirectories(
+				"/opt/homebrew/opt/*/lib/pkgconfig",
+				"/opt/homebrew/opt/*/share/pkgconfig",
+				"/usr/local/opt/*/lib/pkgconfig",
+				"/usr/local/opt/*/share/pkgconfig",
+			))
+		}
+	}
+	return environment
+}
+
+func (bc *buildContext) autotoolsEnvironment() []string {
+	environment := bc.makeEnvironment()
+	if runtime.GOOS == "darwin" {
+		if bc.config.Target.OS == "darwin" {
+			if sdk := discoverAppleSDK(); sdk != "" {
+				environment = setEnvironment(environment, "SDKROOT", sdk)
+				environment = appendCompilerFlag(environment, "CC", "-isysroot "+shellQuote(sdk))
+				environment = appendCompilerFlag(environment, "CXX", "-isysroot "+shellQuote(sdk))
+			}
+		}
+		environment = appendEnvironmentPath(environment, "ACLOCAL_PATH", homebrewGlobDirectories(
+			"/opt/homebrew/opt/*/share/aclocal",
+			"/usr/local/opt/*/share/aclocal",
+		))
+		if target.IsNative(bc.config.Target) {
+			environment = appendEnvironmentPath(environment, "PKG_CONFIG_PATH", homebrewGlobDirectories(
+				"/opt/homebrew/opt/*/lib/pkgconfig",
+				"/opt/homebrew/opt/*/share/pkgconfig",
+				"/usr/local/opt/*/lib/pkgconfig",
+				"/usr/local/opt/*/share/pkgconfig",
+			))
+		}
+	}
+	return environment
+}
+
+func discoverAppleSDK() string {
+	path, err := exec.LookPath("xcrun")
+	if err != nil {
+		return ""
+	}
+	output, err := exec.Command(path, "--sdk", "macosx", "--show-sdk-path").Output()
+	if err != nil {
+		return ""
+	}
+	sdk := strings.TrimSpace(string(output))
+	if info, err := os.Stat(sdk); err != nil || !info.IsDir() {
+		return ""
+	}
+	return sdk
+}
+
+func appendCompilerFlag(environment []string, name, flag string) []string {
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			value := strings.TrimPrefix(entry, prefix)
+			if value == "" {
+				return environment
+			}
+			return setEnvironment(environment, name, value+" "+flag)
+		}
+	}
+	return environment
+}
+
+func appendEnvironmentPath(environment []string, name string, additions []string) []string {
+	if len(additions) == 0 {
+		return environment
+	}
+	existing := ""
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			existing = strings.TrimPrefix(entry, prefix)
+			break
+		}
+	}
+	parts := make([]string, 0, len(additions)+1)
+	if existing != "" {
+		parts = append(parts, existing)
+	}
+	parts = append(parts, additions...)
+	return setEnvironment(environment, name, strings.Join(parts, string(os.PathListSeparator)))
+}
+
+func homebrewGlobDirectories(patterns ...string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		sort.Strings(matches)
+		for _, candidate := range matches {
+			if seen[candidate] {
+				continue
+			}
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				seen[candidate] = true
+				out = append(out, candidate)
+			}
+		}
+	}
+	return out
+}
+
 func (bc *buildContext) makeEnvironment() []string {
-	env := append([]string{}, os.Environ()...)
-	cc := compilerCommand("clang", bc.config.Target, bc.config.Sysroot)
-	cxx := compilerCommand("clang++", bc.config.Target, bc.config.Sysroot)
-	return append(env,
-		"CC="+cc,
-		"CXX="+cxx,
-		"AR=llvm-ar",
-		"RANLIB=llvm-ranlib",
-		"STRIP=llvm-strip",
-		"MIRURI_TARGET="+bc.config.Target.ID,
-		"MIRURI_TARGET_TRIPLE="+bc.config.Target.Triple,
-		"MIRURI_SYSROOT="+bc.config.Sysroot,
-	)
+	environment := bc.toolchainEnvironment()
+	environment = setEnvironment(environment, "CC", compilerCommand(bc.toolchain.CC, bc.config.Target, bc.config.Sysroot, bc.toolchain))
+	environment = setEnvironment(environment, "CXX", compilerCommand(bc.toolchain.CXX, bc.config.Target, bc.config.Sysroot, bc.toolchain))
+	if bc.toolchain.AR != "" {
+		environment = setEnvironment(environment, "AR", shellQuote(bc.toolchain.AR))
+	}
+	if bc.toolchain.Ranlib != "" {
+		environment = setEnvironment(environment, "RANLIB", shellQuote(bc.toolchain.Ranlib))
+	}
+	if bc.toolchain.Strip != "" {
+		environment = setEnvironment(environment, "STRIP", shellQuote(bc.toolchain.Strip))
+	}
+	environment = setEnvironment(environment, "MIRURI_TARGET", bc.config.Target.ID)
+	environment = setEnvironment(environment, "MIRURI_TARGET_TRIPLE", bc.config.Target.Triple)
+	environment = setEnvironment(environment, "MIRURI_SYSROOT", bc.config.Sysroot)
+	if bc.config.Sysroot != "" {
+		environment = setEnvironment(environment, "PKG_CONFIG_SYSROOT_DIR", bc.config.Sysroot)
+		if libraryPath := pkgConfigLibraryPath(bc.config.Sysroot); libraryPath != "" {
+			environment = setEnvironment(environment, "PKG_CONFIG_LIBDIR", libraryPath)
+		}
+	}
+	return environment
+}
+
+func setEnvironment(environment []string, name, value string) []string {
+	prefix := name + "="
+	filtered := environment[:0]
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, prefix+value)
+}
+
+func pkgConfigLibraryPath(sysrootPath string) string {
+	patterns := []string{
+		filepath.Join(sysrootPath, "usr", "lib", "pkgconfig"),
+		filepath.Join(sysrootPath, "usr", "share", "pkgconfig"),
+		filepath.Join(sysrootPath, "usr", "lib", "*", "pkgconfig"),
+	}
+	var paths []string
+	seen := make(map[string]bool)
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		if !strings.Contains(pattern, "*") {
+			matches = []string{pattern}
+		}
+		for _, candidate := range matches {
+			if seen[candidate] {
+				continue
+			}
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				seen[candidate] = true
+				paths = append(paths, candidate)
+			}
+		}
+	}
+	return strings.Join(paths, string(os.PathListSeparator))
 }
 
 func (bc *buildContext) resetAfterRepair(parent context.Context) error {
@@ -533,7 +956,7 @@ func (bc *buildContext) outputWriter() io.Writer {
 }
 
 func chooseBuildSystem(systems []model.BuildSystem) (model.BuildSystem, error) {
-	for _, preferred := range []model.BuildSystem{model.BuildSystemCMake, model.BuildSystemMake} {
+	for _, preferred := range []model.BuildSystem{model.BuildSystemCMake, model.BuildSystemMeson, model.BuildSystemAutotools, model.BuildSystemMake} {
 		for _, detected := range systems {
 			if detected == preferred {
 				return preferred, nil
@@ -544,14 +967,12 @@ func chooseBuildSystem(systems []model.BuildSystem) (model.BuildSystem, error) {
 	for _, system := range systems {
 		values = append(values, string(system))
 	}
-	return "", fmt.Errorf("no supported build system detected; v0.1 supports CMake and Make (detected: %s)", strings.Join(values, ", "))
+	return "", fmt.Errorf("no supported build system detected; v0.1 supports CMake, Meson, Autotools, and Make (detected: %s)", strings.Join(values, ", "))
 }
 
-func validateEnvironment(profile model.TargetProfile, sysroot string) error {
-	for _, tool := range []string{"clang"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			return fmt.Errorf("required tool %s is not on PATH", tool)
-		}
+func validateEnvironment(profile model.TargetProfile, sysrootPath string, toolchain llvmToolchain) error {
+	if toolchain.CC == "" || toolchain.CXX == "" {
+		return fmt.Errorf("Clang C/C++ toolchain is incomplete")
 	}
 	if profile.OS == "windows" && runtime.GOOS != "windows" {
 		return fmt.Errorf("Windows artifacts require a Windows build worker with the Windows SDK in Miruri v0.1")
@@ -559,46 +980,105 @@ func validateEnvironment(profile model.TargetProfile, sysroot string) error {
 	if profile.OS == "darwin" && runtime.GOOS != "darwin" {
 		return fmt.Errorf("macOS artifacts require a macOS build worker with Xcode/Apple SDK in Miruri v0.1")
 	}
-	if profile.RequiresSysroot && !target.IsNative(profile) && sysroot == "" {
-		return fmt.Errorf("target %s requires a sysroot; pass --sysroot or set %s", profile.ID, sysrootEnvName(profile.ID))
+	if profile.RequiresSysroot && !target.IsNative(profile) && sysrootPath == "" {
+		return fmt.Errorf("target %s requires a sysroot; Miruri could not provision one automatically, so pass --sysroot or set %s", profile.ID, sysroot.EnvName(profile.ID))
 	}
-	if sysroot != "" {
-		if info, err := os.Stat(sysroot); err != nil || !info.IsDir() {
-			return fmt.Errorf("sysroot is not a readable directory: %s", sysroot)
+	if sysrootPath != "" {
+		if info, err := os.Stat(sysrootPath); err != nil || !info.IsDir() {
+			return fmt.Errorf("sysroot is not a readable directory: %s", sysrootPath)
+		}
+	}
+	if profile.OS == "linux" && !target.IsNative(profile) {
+		if toolchain.AR == "" || toolchain.Ranlib == "" {
+			return fmt.Errorf("cross-Linux target %s requires llvm-ar and llvm-ranlib; install a complete LLVM toolchain or set MIRURI_LLVM_PREFIX", profile.ID)
+		}
+		if profile.DefaultLinker == "lld" && toolchain.Linker == "" {
+			return fmt.Errorf("cross-Linux target %s requires ld.lld; install LLVM/LLD or set MIRURI_LLVM_PREFIX", profile.ID)
+		}
+		if toolchain.GCCToolchain == "" {
+			return fmt.Errorf("cross-Linux target %s requires a GCC runtime installation inside the sysroot", profile.ID)
 		}
 	}
 	return nil
 }
 
-func resolveSysroot(profile model.TargetProfile, explicit string) string {
-	if explicit != "" {
-		if abs, err := filepath.Abs(explicit); err == nil {
-			return abs
-		}
-		return explicit
+func resolveSysroot(ctx context.Context, config Config, manager *sysroot.Manager) (sysroot.Resolution, bool, error) {
+	if explicit := strings.TrimSpace(config.Sysroot); explicit != "" {
+		return sysroot.Resolution{
+			Mode:     "explicit",
+			TargetID: config.Target.ID,
+			Path:     absolutePath(explicit),
+		}, false, nil
 	}
-	if value := os.Getenv(sysrootEnvName(profile.ID)); value != "" {
-		if abs, err := filepath.Abs(value); err == nil {
-			return abs
-		}
-		return value
+	if value := strings.TrimSpace(os.Getenv(sysroot.EnvName(config.Target.ID))); value != "" {
+		return sysroot.Resolution{
+			Mode:     "environment",
+			TargetID: config.Target.ID,
+			Path:     absolutePath(value),
+		}, false, nil
 	}
-	return ""
+	if !config.Target.RequiresSysroot || target.IsNative(config.Target) {
+		return sysroot.Resolution{}, false, nil
+	}
+	provider, automatic := manager.Provider(config.Target)
+	if resolution, found, err := manager.Lookup(config.Target); err != nil {
+		if config.Offline || config.DryRun {
+			return sysroot.Resolution{}, automatic, err
+		}
+	} else if found && !config.RefreshSysroot {
+		return resolution, automatic, nil
+	}
+	if config.DryRun {
+		if !automatic {
+			return sysroot.Resolution{}, false, nil
+		}
+		if config.Offline {
+			return sysroot.Resolution{}, true, fmt.Errorf("automatic sysroot for %s is not available in the local cache and --offline forbids registry access", config.Target.ID)
+		}
+		return sysroot.Resolution{
+			Mode:     "managed-pending",
+			TargetID: config.Target.ID,
+			Provider: provider.ID,
+			Source:   provider.Image,
+			Platform: sysroot.PlatformString(provider),
+		}, true, nil
+	}
+	resolution, err := manager.Ensure(ctx, config.Target, sysroot.EnsureOptions{
+		Offline: config.Offline,
+		Refresh: config.RefreshSysroot,
+	})
+	return resolution, automatic, err
 }
 
-func sysrootEnvName(targetID string) string {
-	replacer := strings.NewReplacer("-", "_", ".", "_", "/", "_")
-	return "MIRURI_SYSROOT_" + strings.ToUpper(replacer.Replace(targetID))
+func absolutePath(value string) string {
+	if absolute, err := filepath.Abs(value); err == nil {
+		return absolute
+	}
+	return value
 }
 
-func generateCMakeToolchain(profile model.TargetProfile, sysroot string) string {
+func generateCMakeToolchain(profile model.TargetProfile, sysrootPath string, toolchain llvmToolchain) string {
 	var lines []string
 	lines = append(lines,
 		"# Generated by Miruri. Target executables must not be run during artifact-only builds.",
-		"set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)",
-		"set(CMAKE_C_COMPILER clang)",
-		"set(CMAKE_CXX_COMPILER clang++)",
+		"# try_compile must link test executables so CMake's function/library probes remain trustworthy.",
+		"# Cross-compiling does not execute them unless a project explicitly uses try_run().",
+		"set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)",
+		fmt.Sprintf("set(CMAKE_C_COMPILER \"%s\")", cmakeEscape(toolchain.CC)),
+		fmt.Sprintf("set(CMAKE_CXX_COMPILER \"%s\")", cmakeEscape(toolchain.CXX)),
 	)
+	if toolchain.AR != "" {
+		lines = append(lines, fmt.Sprintf("set(CMAKE_AR \"%s\")", cmakeEscape(toolchain.AR)))
+	}
+	if toolchain.Ranlib != "" {
+		lines = append(lines, fmt.Sprintf("set(CMAKE_RANLIB \"%s\")", cmakeEscape(toolchain.Ranlib)))
+	}
+	if toolchain.Strip != "" {
+		lines = append(lines, fmt.Sprintf("set(CMAKE_STRIP \"%s\")", cmakeEscape(toolchain.Strip)))
+	}
+	if toolchain.Linker != "" {
+		lines = append(lines, fmt.Sprintf("set(CMAKE_LINKER \"%s\")", cmakeEscape(toolchain.Linker)))
+	}
 	if !target.IsNative(profile) {
 		lines = append(lines,
 			fmt.Sprintf("set(CMAKE_SYSTEM_NAME \"%s\")", cmakeEscape(profile.CMakeSystemName)),
@@ -608,40 +1088,46 @@ func generateCMakeToolchain(profile model.TargetProfile, sysroot string) string 
 		)
 	}
 	if profile.OS == "darwin" {
-		arch := profile.Arch
-		if arch == "x86_64" {
-			arch = "x86_64"
-		}
-		lines = append(lines, fmt.Sprintf("set(CMAKE_OSX_ARCHITECTURES \"%s\")", cmakeEscape(arch)))
+		lines = append(lines, fmt.Sprintf("set(CMAKE_OSX_ARCHITECTURES \"%s\")", cmakeEscape(profile.Arch)))
 	}
-	if sysroot != "" {
+	if sysrootPath != "" {
 		lines = append(lines,
-			fmt.Sprintf("set(CMAKE_SYSROOT \"%s\")", cmakeEscape(sysroot)),
-			fmt.Sprintf("set(CMAKE_FIND_ROOT_PATH \"%s\")", cmakeEscape(sysroot)),
+			fmt.Sprintf("set(CMAKE_SYSROOT \"%s\")", cmakeEscape(sysrootPath)),
+			fmt.Sprintf("set(CMAKE_FIND_ROOT_PATH \"%s\")", cmakeEscape(sysrootPath)),
 			"set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)",
 			"set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)",
 			"set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)",
 			"set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)",
 		)
 	}
-	if profile.DefaultLinker == "lld" {
+	if toolchain.GCCToolchain != "" {
+		lines = append(lines,
+			fmt.Sprintf("set(CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN \"%s\")", cmakeEscape(toolchain.GCCToolchain)),
+			fmt.Sprintf("set(CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN \"%s\")", cmakeEscape(toolchain.GCCToolchain)),
+		)
+	}
+	if profile.DefaultLinker == "lld" && toolchain.Linker != "" {
 		lines = append(lines,
 			"set(CMAKE_EXE_LINKER_FLAGS_INIT \"-fuse-ld=lld\")",
 			"set(CMAKE_SHARED_LINKER_FLAGS_INIT \"-fuse-ld=lld\")",
+			"set(CMAKE_MODULE_LINKER_FLAGS_INIT \"-fuse-ld=lld\")",
 		)
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func compilerCommand(compiler string, profile model.TargetProfile, sysroot string) string {
-	parts := []string{compiler}
+func compilerCommand(compiler string, profile model.TargetProfile, sysrootPath string, toolchain llvmToolchain) string {
+	parts := []string{shellQuote(compiler)}
 	if !target.IsNative(profile) {
 		parts = append(parts, "--target="+profile.Triple)
 	}
-	if sysroot != "" {
-		parts = append(parts, "--sysroot="+shellQuote(sysroot))
+	if sysrootPath != "" {
+		parts = append(parts, "--sysroot="+shellQuote(sysrootPath))
 	}
-	if profile.DefaultLinker == "lld" {
+	if toolchain.GCCToolchain != "" {
+		parts = append(parts, "--gcc-toolchain="+shellQuote(toolchain.GCCToolchain))
+	}
+	if profile.DefaultLinker == "lld" && toolchain.Linker != "" {
 		parts = append(parts, "-fuse-ld=lld")
 	}
 	if profile.OS == "darwin" {
@@ -655,18 +1141,31 @@ func baseManifest(bc *buildContext, analysisPath, planPath string) model.BuildMa
 	if version == "" {
 		version = "dev"
 	}
-	return model.BuildManifest{
+	manifest := model.BuildManifest{
 		SchemaVersion: "miruri.manifest.v1",
 		GeneratedAt:   time.Now().UTC(),
 		MiruriVersion: version,
 		ProjectName:   bc.analysis.ProjectName,
 		Target:        bc.config.Target,
 		BuildSystem:   bc.buildSystem,
+		Artifacts:     []model.ArtifactInfo{},
 		CodexRepairs:  append([]model.CodexRepairAttempt(nil), bc.codexRepairs...),
 		BuildLog:      filepath.ToSlash(bc.logPath),
 		AnalysisFile:  filepath.ToSlash(analysisPath),
 		PlanFile:      filepath.ToSlash(planPath),
 	}
+	if bc.sysrootInfo.Mode != "" {
+		provenance := bc.sysrootInfo.Provenance()
+		if bc.sysrootLockPath != "" {
+			provenance.LockFile = packageRelative(bc.packageDir, bc.sysrootLockPath)
+		}
+		manifest.Sysroot = &provenance
+	}
+	if bc.toolchain.CC != "" {
+		provenance := bc.toolchain.provenance()
+		manifest.Toolchain = &provenance
+	}
+	return manifest
 }
 
 func packageRelative(packageDir, path string) string {
