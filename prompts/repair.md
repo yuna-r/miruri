@@ -27,7 +27,7 @@ repository.
 
 - target ID, OS, architecture, triple and object format
 - build system
-- latest failed compiler/linker diagnostics
+- Miruriがerror中心に圧縮したcompiler/linker diagnostics（raw logはartifact setに保持）
 - repair attempt number
 - artifact-only policy
 
@@ -44,7 +44,7 @@ repository.
   plugins or assets
 - preserve copyright and license notices
 - do not fetch network resources
-- record material assumptions in `MIRURI_REPAIR_NOTES.md`
+- assumptionとriskはstructured responseだけへ記録し、対象projectへMiruri固有note fileを追加しない
 
 ## Result contract
 
@@ -56,10 +56,12 @@ Codex must return a JSON object with:
 - `assumptions`
 - `remaining_risks`
 
-Miruri independently derives the authoritative changed-file set and binary-safe
-patch from Git. A `repaired` response with no actual diff is rejected. The
-compiler, linker and artifact inspector, not Codex's response, determine whether
-the repair succeeded.
+Miruri independently derives the authoritative changed-file set and source patch
+from Git. Object files, executables, libraries, caches, generated build metadata,
+binary changes and legacy `MIRURI_REPAIR_NOTES.md` are restored or removed before
+the patch is accepted. A `repaired` response with no accepted source/build-script
+diff is rejected. The compiler, linker and artifact inspector, not Codex's
+response, determine whether the repair succeeded.
 
 ## Output contract
 
@@ -71,4 +73,4 @@ Codexの最終messageはJSON Schemaで次のfieldsへ固定されます。
 - `assumptions`
 - `remaining_risks`
 
-Miruriは`events.jsonl`、`stderr.log`、`final.json`、`result.json`、`repair.patch`をrepair attemptごとに保存します。
+Miruriは`diagnostics.txt`、`diagnostics.json`、`events.jsonl`、`stderr.log`、`final.json`、`result.json`、`repair.patch`をrepair attemptごとに保存します。採用しなかったbuild生成物は`discarded_changes`へ理由付きで残します。

@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	Version = "0.1.0-alpha.2"
+	Version = "0.1.0-alpha.5"
 	Commit  = "dev"
 	Date    = "unknown"
 )
@@ -153,6 +153,7 @@ func runCodex(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Binary:        %s\n", status.Binary)
 	fmt.Fprintf(stdout, "Version:       %s\n", status.Version)
+	fmt.Fprintf(stdout, "Compatible:    %t\n", status.Compatible)
 	fmt.Fprintf(stdout, "Authenticated: %t\n", status.Authenticated)
 	fmt.Fprintf(stdout, "Auth mode:     %s\n", status.AuthMode)
 	if status.AuthOutput != "" {
@@ -288,6 +289,13 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Assurance:           %s\n", result.Manifest.Assurance)
 	fmt.Fprintf(stdout, "Artifacts:           %d\n", len(result.Manifest.Artifacts))
 	fmt.Fprintf(stdout, "Codex repairs:       %d\n", len(result.Manifest.CodexRepairs))
+	discardedChanges := 0
+	for _, repair := range result.Manifest.CodexRepairs {
+		discardedChanges += len(repair.DiscardedChanges)
+	}
+	if discardedChanges > 0 {
+		fmt.Fprintf(stdout, "Generated changes discarded: %d\n", discardedChanges)
+	}
 	for _, artifact := range result.Manifest.Artifacts {
 		mark := "OK"
 		if !artifact.ArchitectureOK {

@@ -219,6 +219,31 @@
           },
           "error": {
             "type": "string"
+          },
+          "diagnostics_file": {
+            "type": "string"
+          },
+          "diagnostics_json_file": {
+            "type": "string"
+          },
+          "discarded_changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "reason"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
           }
         },
         "additionalProperties": false

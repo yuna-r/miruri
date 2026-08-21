@@ -33,8 +33,8 @@ func Run() Report {
 		{Name: "llvm-ar", Required: false, Purpose: "cross-target static archives"},
 		{Name: "llvm-ranlib", Required: false, Purpose: "cross-target archive index"},
 		{Name: "llvm-strip", Required: false, Purpose: "target artifact stripping"},
-		{Name: "codex", Required: false, Purpose: "optional constrained portability repair agent"},
-		{Name: "docker", Required: false, Purpose: "optional Linux artifact worker"},
+		{Name: "codex", Required: false, Purpose: "constrained portability repair agent"},
+		{Name: "docker", Required: false, Purpose: "Linux artifact worker"},
 	}
 	if runtime.GOOS == "darwin" {
 		definitions = append(definitions, Check{Name: "xcrun", Required: true, Purpose: "Apple SDK and tool discovery"})

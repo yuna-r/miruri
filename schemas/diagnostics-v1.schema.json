@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/diagnostics-v1.json",
+  "title": "Miruri Structured Build Diagnostics v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "raw_bytes",
+    "raw_lines",
+    "selected_bytes",
+    "selected_lines",
+    "error_lines",
+    "warning_lines",
+    "suppressed_warning_lines",
+    "suppressed_non_warning_lines",
+    "fallback",
+    "truncated",
+    "excerpts",
+    "text"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.diagnostics.v1"
+    },
+    "raw_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "raw_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "selected_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "selected_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "error_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warning_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "suppressed_warning_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "suppressed_non_warning_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fallback": {
+      "type": "boolean"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "excerpts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start_line", "end_line", "lines"],
+        "properties": {
+          "start_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

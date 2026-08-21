@@ -11,7 +11,7 @@
 - [x] ELF / Mach-O / PE / archive inspection
 - [x] host artifact fixture
 - [x] macOS/Linux CI
-- [ ] first external project report (`fzy`)
+- [x] first external Codex repair report (`fzy`, synthetic ARM64 blocker)
 
 ## v0.2 — Environment and dependency resolver
 
@@ -25,12 +25,12 @@
 ## v0.3 — Portability repair
 
 - Clang compilation database capture
-- structured diagnostics
+- [x] structured diagnostics and warning-flood reduction
 - x86 intrinsic classifier
 - inline assembly classifier
 - ABI/endianness/alignment analysis
 - deterministic rewrite rules
-- Codex task packet schema
+- [x] Codex structured response and diagnostic provenance
 - patch export back to source repository
 
 ## v0.4 — GUI and content artifacts

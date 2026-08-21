@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yuna-r/miruri/internal/diagnostics"
 	"github.com/yuna-r/miruri/internal/fsutil"
 	"github.com/yuna-r/miruri/internal/model"
 )
@@ -34,11 +35,13 @@ const (
 )
 
 type Status struct {
-	Binary        string `json:"binary"`
-	Version       string `json:"version,omitempty"`
-	Authenticated bool   `json:"authenticated"`
-	AuthMode      string `json:"auth_mode,omitempty"`
-	AuthOutput    string `json:"auth_output,omitempty"`
+	Binary          string   `json:"binary"`
+	Version         string   `json:"version,omitempty"`
+	Authenticated   bool     `json:"authenticated"`
+	AuthMode        string   `json:"auth_mode,omitempty"`
+	AuthOutput      string   `json:"auth_output,omitempty"`
+	Compatible      bool     `json:"compatible"`
+	MissingFeatures []string `json:"missing_features,omitempty"`
 }
 
 type RepairRequest struct {
@@ -84,20 +87,23 @@ type EventSummary struct {
 }
 
 type RepairResult struct {
-	Command           []string       `json:"command"`
-	Duration          time.Duration  `json:"-"`
-	DurationMillis    int64          `json:"duration_ms"`
-	PromptPath        string         `json:"prompt_path"`
-	EventsPath        string         `json:"events_path"`
-	StderrPath        string         `json:"stderr_path"`
-	FinalResponsePath string         `json:"final_response_path"`
-	SchemaPath        string         `json:"schema_path"`
-	PatchPath         string         `json:"patch_path,omitempty"`
-	ChangedFiles      []string       `json:"changed_files,omitempty"`
-	Events            EventSummary   `json:"events"`
-	Response          RepairResponse `json:"response"`
-	Error             string         `json:"error,omitempty"`
-	Stderr            string         `json:"-"`
+	Command             []string                `json:"command"`
+	Duration            time.Duration           `json:"-"`
+	DurationMillis      int64                   `json:"duration_ms"`
+	PromptPath          string                  `json:"prompt_path"`
+	EventsPath          string                  `json:"events_path"`
+	StderrPath          string                  `json:"stderr_path"`
+	FinalResponsePath   string                  `json:"final_response_path"`
+	SchemaPath          string                  `json:"schema_path"`
+	PatchPath           string                  `json:"patch_path,omitempty"`
+	DiagnosticsPath     string                  `json:"diagnostics_path,omitempty"`
+	DiagnosticsJSONPath string                  `json:"diagnostics_json_path,omitempty"`
+	ChangedFiles        []string                `json:"changed_files,omitempty"`
+	DiscardedChanges    []model.DiscardedChange `json:"discarded_changes,omitempty"`
+	Events              EventSummary            `json:"events"`
+	Response            RepairResponse          `json:"response"`
+	Error               string                  `json:"error,omitempty"`
+	Stderr              string                  `json:"-"`
 }
 
 func Available(binary string) bool {
@@ -116,6 +122,11 @@ func Check(ctx context.Context, binary string, authMode AuthMode) (Status, error
 		return status, fmt.Errorf("read Codex version: %w", err)
 	}
 	status.Version = strings.TrimSpace(version)
+	status.MissingFeatures = checkRequiredCLIOptions(ctx, path, authMode)
+	status.Compatible = len(status.MissingFeatures) == 0
+	if !status.Compatible {
+		return status, fmt.Errorf("Codex CLI is missing required automation options: %s; update Codex CLI before using Miruri repair", strings.Join(status.MissingFeatures, ", "))
+	}
 	authOutput, err := runSmall(ctx, path, authMode, "login", "status")
 	status.AuthOutput = strings.TrimSpace(authOutput)
 	if err != nil {
@@ -171,7 +182,16 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 	stderrPath := filepath.Join(outputDir, "stderr.log")
 	finalPath := filepath.Join(outputDir, "final.json")
 	schemaPath := filepath.Join(outputDir, "response-schema.json")
-	prompt := buildPrompt(request)
+	diagnosticsPath := filepath.Join(outputDir, "diagnostics.txt")
+	diagnosticsJSONPath := filepath.Join(outputDir, "diagnostics.json")
+	diagnosticReport := diagnostics.Summarize(request.BuildLog, diagnostics.DefaultMaxBytes)
+	if err := os.WriteFile(diagnosticsPath, []byte(diagnosticReport.Text), 0o600); err != nil {
+		return RepairResult{}, err
+	}
+	if err := fsutil.WriteJSON(diagnosticsJSONPath, diagnosticReport); err != nil {
+		return RepairResult{}, err
+	}
+	prompt := buildPrompt(request, diagnosticReport.Text)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return RepairResult{}, err
 	}
@@ -262,13 +282,15 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 	defer stderrFile.Close()
 
 	result := RepairResult{
-		Command:           append([]string{binary}, args...),
-		PromptPath:        promptPath,
-		EventsPath:        eventsPath,
-		StderrPath:        stderrPath,
-		FinalResponsePath: finalPath,
-		SchemaPath:        schemaPath,
-		Events:            EventSummary{Types: map[string]int{}},
+		Command:             append([]string{binary}, args...),
+		PromptPath:          promptPath,
+		EventsPath:          eventsPath,
+		StderrPath:          stderrPath,
+		FinalResponsePath:   finalPath,
+		SchemaPath:          schemaPath,
+		DiagnosticsPath:     diagnosticsPath,
+		DiagnosticsJSONPath: diagnosticsJSONPath,
+		Events:              EventSummary{Types: map[string]int{}},
 	}
 	start := time.Now()
 	if err := command.Start(); err != nil {
@@ -345,12 +367,36 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 	return result, nil
 }
 
-func buildPrompt(request RepairRequest) string {
-	log := request.BuildLog
-	const maxLog = 48_000
-	if len(log) > maxLog {
-		log = log[len(log)-maxLog:]
+func checkRequiredCLIOptions(ctx context.Context, binary string, authMode AuthMode) []string {
+	topHelp, topErr := runSmall(ctx, binary, authMode, "--help")
+	execHelp, execErr := runSmall(ctx, binary, authMode, "exec", "--help")
+	var missing []string
+	if topErr != nil {
+		missing = append(missing, "top-level --help")
+	} else if !strings.Contains(topHelp, "--ask-for-approval") {
+		missing = append(missing, "--ask-for-approval")
 	}
+	if execErr != nil {
+		missing = append(missing, "exec --help")
+		return uniqueStrings(missing)
+	}
+	for _, option := range []string{
+		"--json",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--sandbox",
+		"--output-schema",
+		"--output-last-message",
+	} {
+		if !strings.Contains(execHelp, option) {
+			missing = append(missing, option)
+		}
+	}
+	return uniqueStrings(missing)
+}
+
+func buildPrompt(request RepairRequest, diagnosticSummary string) string {
 	version := request.MiruriVersion
 	if version == "" {
 		version = "dev"
@@ -376,24 +422,25 @@ Mandatory constraints:
 - Preserve optimized architecture-specific paths behind correct compile-time feature guards.
 - Prefer portable ISO C/C++ fallbacks before adding target-specific intrinsics.
 - Do not silently disable GUI, rendering, shaders, audio, input, networking, plugins, assets or any other product feature.
-- Do not replace third-party code unless the replacement is license-compatible and the decision is documented.
+- Do not replace third-party code unless the replacement is license-compatible and the decision is documented in the structured response.
 - Do not use emulators or compatibility runners, including QEMU, Wine or Rosetta.
 - Do not run target executables, target test binaries, configure probes or generated target tools.
 - Host-side analysis and host-native code generators may run only when clearly separate from target artifacts.
 - Do not fetch network resources. Use only files and tools already present.
-- Make the smallest coherent repair that addresses the supplied diagnostics.
+- Make the smallest coherent source/build-script repair that addresses the supplied diagnostics.
+- You may compile or link to validate the repair, but do not intentionally modify or retain object files, executables, libraries, caches or other generated build products.
+- Do not create MIRURI_REPAIR_NOTES.md or other Miruri-specific files in the target project. Put assumptions and risks only in the structured response.
 - Add or update tests only when they can be compiled without executing target artifacts.
-- Record material assumptions in MIRURI_REPAIR_NOTES.md.
 
 Before finishing:
-1. Review the actual diff.
+1. Review the actual source/build-script diff.
 2. Ensure no feature was deleted merely to make compilation pass.
-3. Return the required structured JSON summary. The changed_files field is advisory; Miruri independently computes the authoritative Git patch.
+3. Return the required structured JSON summary. The changed_files field is advisory; Miruri independently computes the authoritative source patch and discards generated build products.
 
-Build diagnostics:
+Miruri-selected build diagnostics:
 
 %s
-`, version, request.Target.ID, request.Target.OS, request.Target.Arch, request.Target.Triple, request.Target.ObjectFormat, request.BuildSystem, request.Attempt, strings.TrimSpace(log))
+`, version, request.Target.ID, request.Target.OS, request.Target.Arch, request.Target.Triple, request.Target.ObjectFormat, request.BuildSystem, request.Attempt, strings.TrimSpace(diagnosticSummary))
 }
 
 func validateGitWorkspace(ctx context.Context, workspace string) error {

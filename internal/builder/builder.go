@@ -236,18 +236,30 @@ func Build(ctx context.Context, config Config) (Result, error) {
 				repairErr = fmt.Errorf("Codex returned status %q: %s", result.Response.Status, result.Response.Summary)
 			} else if violations := codex.ArtifactOnlyViolations(result.Events.Commands); len(violations) > 0 {
 				repairErr = fmt.Errorf("Codex violated artifact-only policy: %s", strings.Join(violations, "; "))
+			} else if symlinkErr := fsutil.ValidateSymlinksWithin(sourceDir); symlinkErr != nil {
+				repairErr = fmt.Errorf("Codex created an unsafe repair workspace: %w", symlinkErr)
 			} else {
-				changes, captureErr := bc.repairRepo.CaptureAndCommit(fmt.Sprintf("Miruri Codex repair attempt %d", attempt+1))
+				changes, captureErr := bc.repairRepo.CaptureAndCommitWithOptions(
+					fmt.Sprintf("Miruri Codex repair attempt %d", attempt+1),
+					repairworkspace.CaptureOptions{Filter: codexRepairChangeFilter(sourceDir)},
+				)
 				if captureErr != nil {
 					repairErr = captureErr
-				} else if len(changes.Files) == 0 {
-					repairErr = fmt.Errorf("Codex reported a repair but made no workspace changes")
 				} else {
-					changedFiles = changes.Files
-					result.ChangedFiles = append([]string(nil), changedFiles...)
-					result.PatchPath = patchPath
-					if err := os.WriteFile(patchPath, changes.Patch, 0o600); err != nil {
-						repairErr = fmt.Errorf("write Codex repair patch: %w", err)
+					for _, discarded := range changes.Discarded {
+						result.DiscardedChanges = append(result.DiscardedChanges, model.DiscardedChange{
+							Path: discarded.Path, Reason: discarded.Reason,
+						})
+					}
+					if len(changes.Files) == 0 {
+						repairErr = fmt.Errorf("Codex reported a repair but made no accepted source or build-script changes")
+					} else {
+						changedFiles = changes.Files
+						result.ChangedFiles = append([]string(nil), changedFiles...)
+						result.PatchPath = patchPath
+						if err := os.WriteFile(patchPath, changes.Patch, 0o600); err != nil {
+							repairErr = fmt.Errorf("write Codex repair patch: %w", err)
+						}
 					}
 				}
 			}
@@ -275,19 +287,22 @@ func Build(ctx context.Context, config Config) (Result, error) {
 			status = "error"
 		}
 		repairInfo := model.CodexRepairAttempt{
-			Attempt:          attempt + 1,
-			Status:           status,
-			DurationMillis:   result.DurationMillis,
-			ThreadID:         result.Events.ThreadID,
-			TurnID:           result.Events.TurnID,
-			Summary:          result.Response.Summary,
-			ChangedFiles:     changedFiles,
-			Assumptions:      result.Response.Assumptions,
-			RemainingRisks:   result.Response.RemainingRisks,
-			PromptFile:       packageRelative(packageDir, result.PromptPath),
-			EventLog:         packageRelative(packageDir, result.EventsPath),
-			StderrLog:        packageRelative(packageDir, result.StderrPath),
-			FinalMessageFile: packageRelative(packageDir, result.FinalResponsePath),
+			Attempt:             attempt + 1,
+			Status:              status,
+			DurationMillis:      result.DurationMillis,
+			ThreadID:            result.Events.ThreadID,
+			TurnID:              result.Events.TurnID,
+			Summary:             result.Response.Summary,
+			ChangedFiles:        changedFiles,
+			Assumptions:         result.Response.Assumptions,
+			RemainingRisks:      result.Response.RemainingRisks,
+			PromptFile:          packageRelative(packageDir, result.PromptPath),
+			DiagnosticsFile:     packageRelative(packageDir, result.DiagnosticsPath),
+			DiagnosticsJSONFile: packageRelative(packageDir, result.DiagnosticsJSONPath),
+			EventLog:            packageRelative(packageDir, result.EventsPath),
+			StderrLog:           packageRelative(packageDir, result.StderrPath),
+			FinalMessageFile:    packageRelative(packageDir, result.FinalResponsePath),
+			DiscardedChanges:    append([]model.DiscardedChange(nil), result.DiscardedChanges...),
 			Usage: model.CodexUsage{
 				InputTokens:           result.Events.InputTokens,
 				CachedInputTokens:     result.Events.CachedInputTokens,
@@ -314,6 +329,9 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		}
 		for _, changed := range changedFiles {
 			bc.logf("  Codex changed: %s\n", changed)
+		}
+		for _, discarded := range result.DiscardedChanges {
+			bc.logf("  Miruri discarded generated change: %s (%s)\n", discarded.Path, discarded.Reason)
 		}
 		if repairErr != nil {
 			buildErr = fmt.Errorf("%w; %v", buildErr, repairErr)

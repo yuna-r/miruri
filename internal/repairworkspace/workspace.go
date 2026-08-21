@@ -18,9 +18,21 @@ type Repository struct {
 	gitPath string
 }
 
+type DiscardedChange struct {
+	Path   string
+	Reason string
+}
+
+type ChangeFilter func(path string) (keep bool, reason string)
+
+type CaptureOptions struct {
+	Filter ChangeFilter
+}
+
 type ChangeSet struct {
-	Files []string
-	Patch []byte
+	Files     []string
+	Patch     []byte
+	Discarded []DiscardedChange
 }
 
 func Init(dir string) (*Repository, error) {
@@ -64,11 +76,14 @@ func Init(dir string) (*Repository, error) {
 // CaptureAndCommit stages every change, returns a binary-safe patch relative to
 // the previous checkpoint, and commits the new checkpoint for a later repair.
 func (r *Repository) CaptureAndCommit(message string) (ChangeSet, error) {
+	return r.CaptureAndCommitWithOptions(message, CaptureOptions{})
+}
+
+// CaptureAndCommitWithOptions can discard build products or policy-forbidden
+// files before the authoritative repair patch is created. Discarded paths are
+// restored to the previous checkpoint (or removed when newly created).
+func (r *Repository) CaptureAndCommitWithOptions(message string, options CaptureOptions) (ChangeSet, error) {
 	if err := r.stageAll(); err != nil {
-		return ChangeSet{}, err
-	}
-	patch, err := r.runBytes("diff", "--cached", "--binary", "--no-ext-diff", "HEAD", "--", ".")
-	if err != nil {
 		return ChangeSet{}, err
 	}
 	namesRaw, err := r.runBytes("diff", "--cached", "--name-only", "-z", "HEAD", "--", ".")
@@ -76,13 +91,56 @@ func (r *Repository) CaptureAndCommit(message string) (ChangeSet, error) {
 		return ChangeSet{}, err
 	}
 	files := parseNULList(namesRaw)
+	var discarded []DiscardedChange
+	if options.Filter != nil {
+		for _, path := range files {
+			keep, reason := options.Filter(path)
+			if keep {
+				continue
+			}
+			if strings.TrimSpace(reason) == "" {
+				reason = "excluded by repair patch policy"
+			}
+			if err := r.discardPath(path); err != nil {
+				return ChangeSet{}, fmt.Errorf("discard repair change %s: %w", path, err)
+			}
+			discarded = append(discarded, DiscardedChange{Path: path, Reason: reason})
+		}
+		if err := r.stageAll(); err != nil {
+			return ChangeSet{}, err
+		}
+	}
+	patch, err := r.runBytes("diff", "--cached", "--binary", "--no-ext-diff", "HEAD", "--", ".")
+	if err != nil {
+		return ChangeSet{}, err
+	}
+	namesRaw, err = r.runBytes("diff", "--cached", "--name-only", "-z", "HEAD", "--", ".")
+	if err != nil {
+		return ChangeSet{}, err
+	}
+	files = parseNULList(namesRaw)
 	if len(files) == 0 {
-		return ChangeSet{}, nil
+		return ChangeSet{Discarded: discarded}, nil
 	}
 	if _, err := r.run("commit", "-q", "-m", message); err != nil {
 		return ChangeSet{}, err
 	}
-	return ChangeSet{Files: files, Patch: patch}, nil
+	return ChangeSet{Files: files, Patch: patch, Discarded: discarded}, nil
+}
+
+func (r *Repository) discardPath(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || filepath.IsAbs(path) || strings.HasPrefix(path, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("unsafe repair path %q", path)
+	}
+	// Tracked paths can be restored directly from HEAD, including deletions.
+	if _, err := r.run("checkout", "-q", "HEAD", "--", path); err == nil {
+		return nil
+	}
+	// The path did not exist in HEAD. Remove it from the temporary index and
+	// filesystem. This also handles ignored build products staged with -f.
+	_, _ = r.run("reset", "-q", "HEAD", "--", path)
+	return os.RemoveAll(filepath.Join(r.dir, path))
 }
 
 // Head returns the current checkpoint commit. Callers can retain it before an

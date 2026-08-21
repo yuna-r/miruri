@@ -88,9 +88,17 @@ if not manifest.get('artifacts'):
     raise SystemExit('no artifact was produced')
 if 'MIRURI_CODEX_SMOKE_NEEDS_A_PORTABLE_NON_X86_FALLBACK' not in source:
     raise SystemExit('the original project was modified')
+for field in ('diagnostics_file', 'diagnostics_json_file'):
+    path = manifests[0].parent / repairs[0][field]
+    if not path.is_file() or path.stat().st_size == 0:
+        raise SystemExit(f'missing {field}: {path}')
 patch = manifests[0].parent / repairs[0]['patch_file']
 if not patch.is_file() or patch.stat().st_size == 0:
     raise SystemExit(f'missing repair patch: {patch}')
+patch_text = patch.read_text(errors='replace')
+for forbidden in ('MIRURI_REPAIR_NOTES.md', 'GIT binary patch'):
+    if forbidden in patch_text:
+        raise SystemExit(f'generated/non-source content leaked into repair patch: {forbidden}')
 print(f'Miruri Codex smoke test passed: {manifests[0].parent}')
 PY
 

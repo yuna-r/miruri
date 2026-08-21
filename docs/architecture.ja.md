@@ -274,16 +274,25 @@ v0.1が到達するのは`statically-validated`までです。
 Codexはcompilerの代わりではなく、制約付きPorting Agentです。
 
 ```text
-structured diagnostics
+raw build.log
         │
         ▼
+error-focused diagnostic reducer
+        │
+        ├─ diagnostics.txt / diagnostics.json
+        ▼
 Codex repair in isolated overlay
+        │
+        ▼
+source patch boundary
+        ├─ accept text source / build scripts
+        └─ discard objects / binaries / caches / unsafe links
         │
         ▼
 compiler / linker / inspector verdict
 ```
 
-Miruriは`codex --ask-for-approval never exec --sandbox workspace-write`を利用し、dangerous bypassを使いません。
+Miruriは`codex --ask-for-approval never exec --sandbox workspace-write`を利用し、dangerous bypassを使いません。repair前にCodex CLI option compatibilityを検査し、repair後にはsymlink境界を再検査します。
 
 ## 13. Worker将来像
 

@@ -31,6 +31,9 @@ jobs:
         run: go test ./...
       - name: Vet
         run: go vet ./...
+      - name: Race test
+        if: runner.os == 'Linux'
+        run: go test -race ./...
       - name: Build Miruri
         run: make build
       - name: Host artifact smoke test

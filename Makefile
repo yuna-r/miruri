@@ -1,12 +1,12 @@
 BINARY := bin/miruri
-VERSION := 0.1.0-alpha.4
+VERSION := 0.1.0-alpha.5
 COMMIT := $(shell c=$$(git rev-parse --short HEAD 2>/dev/null || echo dev); if ! git diff --quiet --ignore-submodules HEAD 2>/dev/null || test -n "$$(git ls-files --others --exclude-standard 2>/dev/null)"; then c="$$c-dirty"; fi; printf '%s' "$$c")
 LDFLAGS := -s -w \
 	-X github.com/yuna-r/miruri/internal/cli.Version=$(VERSION) \
 	-X github.com/yuna-r/miruri/internal/cli.Commit=$(COMMIT) \
 	-X github.com/yuna-r/miruri/internal/cli.Date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-.PHONY: all build test vet fmt check smoke codex-smoke tools clean
+.PHONY: all build test test-race vet fmt check smoke codex-smoke tools clean
 
 all: check build
 
@@ -16,6 +16,9 @@ build:
 
 test:
 	go test ./...
+
+test-race:
+	go test -race ./...
 
 vet:
 	go vet ./...

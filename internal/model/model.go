@@ -137,6 +137,11 @@ type ArtifactInfo struct {
 	Notes          []string `json:"notes,omitempty"`
 }
 
+type DiscardedChange struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
 type CodexUsage struct {
 	InputTokens           int64 `json:"input_tokens,omitempty"`
 	CachedInputTokens     int64 `json:"cached_input_tokens,omitempty"`
@@ -145,23 +150,26 @@ type CodexUsage struct {
 }
 
 type CodexRepairAttempt struct {
-	Attempt          int        `json:"attempt"`
-	Status           string     `json:"status"`
-	DurationMillis   int64      `json:"duration_ms"`
-	ThreadID         string     `json:"thread_id,omitempty"`
-	TurnID           string     `json:"turn_id,omitempty"`
-	Summary          string     `json:"summary,omitempty"`
-	ChangedFiles     []string   `json:"changed_files,omitempty"`
-	Assumptions      []string   `json:"assumptions,omitempty"`
-	RemainingRisks   []string   `json:"remaining_risks,omitempty"`
-	PromptFile       string     `json:"prompt_file,omitempty"`
-	EventLog         string     `json:"event_log,omitempty"`
-	StderrLog        string     `json:"stderr_log,omitempty"`
-	FinalMessageFile string     `json:"final_message_file,omitempty"`
-	ResultFile       string     `json:"result_file,omitempty"`
-	PatchFile        string     `json:"patch_file,omitempty"`
-	Usage            CodexUsage `json:"usage,omitempty"`
-	Error            string     `json:"error,omitempty"`
+	Attempt             int               `json:"attempt"`
+	Status              string            `json:"status"`
+	DurationMillis      int64             `json:"duration_ms"`
+	ThreadID            string            `json:"thread_id,omitempty"`
+	TurnID              string            `json:"turn_id,omitempty"`
+	Summary             string            `json:"summary,omitempty"`
+	ChangedFiles        []string          `json:"changed_files,omitempty"`
+	Assumptions         []string          `json:"assumptions,omitempty"`
+	RemainingRisks      []string          `json:"remaining_risks,omitempty"`
+	PromptFile          string            `json:"prompt_file,omitempty"`
+	DiagnosticsFile     string            `json:"diagnostics_file,omitempty"`
+	DiagnosticsJSONFile string            `json:"diagnostics_json_file,omitempty"`
+	EventLog            string            `json:"event_log,omitempty"`
+	StderrLog           string            `json:"stderr_log,omitempty"`
+	FinalMessageFile    string            `json:"final_message_file,omitempty"`
+	ResultFile          string            `json:"result_file,omitempty"`
+	PatchFile           string            `json:"patch_file,omitempty"`
+	DiscardedChanges    []DiscardedChange `json:"discarded_changes,omitempty"`
+	Usage               CodexUsage        `json:"usage,omitempty"`
+	Error               string            `json:"error,omitempty"`
 }
 
 type BuildManifest struct {

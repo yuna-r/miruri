@@ -72,3 +72,59 @@ func TestCaptureAndReset(t *testing.T) {
 		t.Fatalf("checkpoint reset restored wrong content: %q", data)
 	}
 }
+
+func TestCaptureWithFilterDiscardsGeneratedChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.c"), []byte("int value = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "program"), []byte("old binary\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.c"), []byte("int value = 2;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "program"), []byte("new binary\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.o"), []byte("object\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := repo.CaptureAndCommitWithOptions("filtered repair", CaptureOptions{
+		Filter: func(path string) (bool, string) {
+			if path == "program" || path == "main.o" {
+				return false, "generated output"
+			}
+			return true, ""
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes.Files) != 1 || changes.Files[0] != "main.c" {
+		t.Fatalf("unexpected accepted files: %#v", changes.Files)
+	}
+	if len(changes.Discarded) != 2 {
+		t.Fatalf("unexpected discarded changes: %#v", changes.Discarded)
+	}
+	if strings.Contains(string(changes.Patch), "program") || strings.Contains(string(changes.Patch), "main.o") {
+		t.Fatalf("generated output leaked into patch:\n%s", changes.Patch)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "program"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old binary\x00" {
+		t.Fatalf("tracked generated output was not restored: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.o")); !os.IsNotExist(err) {
+		t.Fatalf("untracked generated output was not removed: %v", err)
+	}
+}

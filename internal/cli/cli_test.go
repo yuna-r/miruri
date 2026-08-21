@@ -17,6 +17,8 @@ func TestCodexStatusCommand(t *testing.T) {
 	fake := filepath.Join(root, "codex")
 	script := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
 if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
 if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
 exit 9
@@ -29,7 +31,7 @@ exit 9
 	if code != 0 {
 		t.Fatalf("unexpected exit %d: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Authenticated: true") || !strings.Contains(stdout.String(), "Auth mode:     chatgpt") {
+	if !strings.Contains(stdout.String(), "Compatible:    true") || !strings.Contains(stdout.String(), "Authenticated: true") || !strings.Contains(stdout.String(), "Auth mode:     chatgpt") {
 		t.Fatalf("unexpected output:\n%s", stdout.String())
 	}
 }

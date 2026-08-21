@@ -2,6 +2,30 @@
 
 All notable changes to Miruri will be documented here.
 
+## [0.1.0-alpha.5] - 2026-08-21
+
+### Added
+
+- bounded error-focused `diagnostics.txt` and machine-readable `diagnostics.json` for every Codex repair attempt
+- source patch boundary with reasoned `discarded_changes` provenance
+- Codex CLI automation-option compatibility probe in `miruri codex status` and before repair
+- post-Codex symlink boundary revalidation
+- first external Codex-assisted repair experiment report using `fzy`
+- Linux CI race-detector coverage and a local `make test-race` target
+
+### Changed
+
+- send selected compiler/linker errors and local context to Codex instead of an arbitrary 48 KB log tail
+- keep assumptions and remaining risks in structured JSON rather than adding `MIRURI_REPAIR_NOTES.md` to target projects
+- accept only textual source/build-script changes in authoritative repair patches
+
+### Fixed
+
+- exclude and restore object files, executables, libraries, caches, generated metadata and binary changes created during Codex validation
+- prevent warning floods from dominating Codex context and ChatGPT usage
+- reject repair attempts that introduce symlinks escaping the isolated workspace
+- correct the fallback CLI version string and remove a duplicate build-context cancel call
+
 ## [0.1.0-alpha.4] - 2026-08-21
 
 ### Fixed

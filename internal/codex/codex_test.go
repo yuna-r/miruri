@@ -29,6 +29,14 @@ func TestCheckAndRepairWithFakeCLI(t *testing.T) {
 	fake := filepath.Join(root, "codex")
 	script := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "--help" ]; then
+  echo "--ask-for-approval"
+  exit 0
+fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
+  echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"
+  exit 0
+fi
 if [ "${1:-}" = "--version" ]; then
   echo "codex-cli 9.9.9-test"
   exit 0
@@ -138,10 +146,20 @@ JSON
 	if len(progress) < 2 {
 		t.Fatalf("expected progress events, got %#v", progress)
 	}
-	for _, path := range []string{result.PromptPath, result.EventsPath, result.StderrPath, result.FinalResponsePath, result.SchemaPath} {
+	for _, path := range []string{result.PromptPath, result.DiagnosticsPath, result.DiagnosticsJSONPath, result.EventsPath, result.StderrPath, result.FinalResponsePath, result.SchemaPath} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("missing output %s: %v", path, err)
 		}
+	}
+	prompt, err := os.ReadFile(result.PromptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(prompt), "MIRURI_REPAIR_NOTES.md") && !strings.Contains(string(prompt), "Do not create MIRURI_REPAIR_NOTES.md") {
+		t.Fatalf("legacy repair-notes requirement remained in prompt:\n%s", prompt)
+	}
+	if !strings.Contains(string(prompt), "Miruri-selected build diagnostics") {
+		t.Fatalf("structured diagnostic packet missing from prompt:\n%s", prompt)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "repaired.c")); err != nil {
 		t.Fatal("fake Codex did not edit workspace")
@@ -190,6 +208,14 @@ func TestCheckRejectsAPIKeyWhenChatGPTIsRequired(t *testing.T) {
 	fake := filepath.Join(root, "codex")
 	script := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "--help" ]; then
+  echo "--ask-for-approval"
+  exit 0
+fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
+  echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"
+  exit 0
+fi
 if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
 if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using API key"; exit 0; fi
 exit 9
@@ -214,5 +240,34 @@ func TestArtifactOnlyViolations(t *testing.T) {
 	violations := ArtifactOnlyViolations([]string{"clang -c main.c", "qemu-riscv64 ./app", "wine app.exe"})
 	if len(violations) != 2 {
 		t.Fatalf("expected two violations, got %#v", violations)
+	}
+}
+
+func TestCheckRejectsIncompatibleCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell fixture")
+	}
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--version" ]; then echo "codex-cli old"; exit 0; fi
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --sandbox"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+exit 9
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	status, err := Check(context.Background(), fake, AuthChatGPT)
+	if err == nil {
+		t.Fatal("expected incompatible CLI rejection")
+	}
+	if status.Compatible || len(status.MissingFeatures) == 0 {
+		t.Fatalf("missing compatibility details: %+v", status)
+	}
+	if !strings.Contains(err.Error(), "update Codex CLI") {
+		t.Fatalf("unexpected compatibility error: %v", err)
 	}
 }

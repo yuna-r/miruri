@@ -4,7 +4,7 @@
 
 既存のC/C++プロジェクト全体を解析し、対象CPU・OS・ABI・SDK・GUI・graphics・shader・audio・input・plugin・assetの要件を分離したうえで、指定ターゲット向けの配布可能な成果物を生成することを目標としています。
 
-> Status: `v0.1.0-alpha.4` — artifact-only prototype
+> Status: `v0.1.0-alpha.5` — artifact-only prototype
 
 Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
 
@@ -121,9 +121,29 @@ Miruriは次を強制します。
 - target executableを実行しない
 - public APIや機能を黙って削除しない
 - x86最適化pathを残し、portable fallbackを優先
-- repair logをartifact setへ保存
+- compiler warning洪水を圧縮し、errorと周辺contextだけをCodexへ渡す
+- Codexが確認buildで生成したobject・library・executable・cacheをrepair patchから除外する
+- Codex実行後にsymlink境界を再検査する
+- repair logと採用・破棄した変更をartifact setへ保存する
 
-Codexは推論・修正候補を担当し、compiler、linker、artifact inspectorが結果を判定します。
+Codexは推論・source/build-script修正候補を担当し、compiler、linker、artifact inspectorが結果を判定します。Codex CLIの必要optionはrepair前に自動検査されます。
+
+repair attemptごとのprovenanceは次のように保存されます。
+
+```text
+dist/<target>/codex/attempt-01/
+├── prompt.md
+├── diagnostics.txt
+├── diagnostics.json
+├── response-schema.json
+├── events.jsonl
+├── stderr.log
+├── final.json
+├── result.json
+└── repair.patch
+```
+
+`repair.patch`には採用されたtext source/build-scriptだけが入り、破棄したbuild生成物は`result.json`と`manifest.json`の`discarded_changes`へ理由付きで記録されます。
 
 ## 設計上の核
 
@@ -156,7 +176,7 @@ Isolated Artifact Builder
 Static Artifact Inspector
 ```
 
-詳しくは [`docs/architecture.ja.md`](docs/architecture.ja.md) と [`docs/adr/`](docs/adr/) を参照してください。公開JSON形式は [`schemas/`](schemas/) にあります。
+詳しくは [`docs/architecture.ja.md`](docs/architecture.ja.md) と [`docs/adr/`](docs/adr/) を参照してください。公開JSON形式は [`schemas/`](schemas/) にあります。最初の外部projectを使ったCodex repair実験は [`docs/experiments/fzy-codex-repair.ja.md`](docs/experiments/fzy-codex-repair.ja.md) に記録しています。
 
 ## ライセンス
 
