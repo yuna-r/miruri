@@ -1,0 +1,55 @@
+{
+  "id": "compute",
+  "version": "0.2.0",
+  "description": "Accelerator APIs and additional vector ISA families",
+  "rules": [
+    {
+      "id": "cuda",
+      "description": "NVIDIA CUDA compute runtime or kernels",
+      "domain": "compute",
+      "capability": "compute.cuda",
+      "hard": true,
+      "patterns": ["<cuda_runtime.h>", "cudaMalloc(", "__global__"]
+    },
+    {
+      "id": "opencl",
+      "description": "OpenCL compute runtime",
+      "domain": "compute",
+      "capability": "compute.opencl",
+      "hard": true,
+      "patterns": ["<CL/cl.h>", "clCreateContext(", "clEnqueueNDRangeKernel("]
+    },
+    {
+      "id": "openmp",
+      "description": "OpenMP parallel runtime",
+      "domain": "compute",
+      "capability": "compute.openmp",
+      "hard": false,
+      "patterns": ["<omp.h>", "#pragma omp"]
+    },
+    {
+      "id": "arm-sve",
+      "description": "ARM Scalable Vector Extension intrinsics",
+      "domain": "cpu",
+      "capability": "cpu.arm.sve",
+      "hard": true,
+      "patterns": ["<arm_sve.h>", "svfloat32_t", "svld1_"]
+    },
+    {
+      "id": "riscv-vector",
+      "description": "RISC-V Vector intrinsics",
+      "domain": "cpu",
+      "capability": "cpu.riscv.vector",
+      "hard": true,
+      "patterns": ["<riscv_vector.h>", "vfloat32m1_t", "__riscv_v"]
+    },
+    {
+      "id": "wasm-simd",
+      "description": "WebAssembly SIMD intrinsics",
+      "domain": "cpu",
+      "capability": "cpu.wasm.simd",
+      "hard": true,
+      "patterns": ["<wasm_simd128.h>", "v128_t", "wasm_v128_"]
+    }
+  ]
+}

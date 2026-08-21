@@ -22,8 +22,40 @@ import (
 
 	"github.com/yuna-r/miruri/internal/codex"
 	"github.com/yuna-r/miruri/internal/model"
+	"github.com/yuna-r/miruri/internal/sysroot"
 	"github.com/yuna-r/miruri/internal/target"
+	"github.com/yuna-r/miruri/internal/verify"
 )
+
+func TestBuildRequestDigestIncludesCodexInstructions(t *testing.T) {
+	base := Config{
+		Target:     model.TargetProfile{ID: "macos-arm64", OS: "macos", Arch: "arm64", Triple: "arm64-apple-darwin", ObjectFormat: "mach-o"},
+		UseCodex:   true,
+		CodexMode:  codex.TaskPort,
+		MaxRepairs: 12,
+		Version:    "test",
+	}
+	analysis := model.AnalysisReport{ProjectDigest: "sha256:project"}
+	resolution := sysroot.Resolution{Mode: "host", TargetID: "macos-arm64", Path: "/"}
+
+	first := base
+	first.CodexInstructions = "Prioritize controller input."
+	firstDigest, err := buildRequestDigest(first, analysis, model.BuildSystemCMake, resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := base
+	second.CodexInstructions = "Prioritize audio fidelity."
+	secondDigest, err := buildRequestDigest(second, analysis, model.BuildSystemCMake, resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if firstDigest == secondDigest {
+		t.Fatal("different Codex instructions produced the same build request digest")
+	}
+}
 
 func requireNativeCLinker(t *testing.T) {
 	t.Helper()
@@ -1300,5 +1332,823 @@ print(pkgdatadir, localedir)
 	}
 	if _, err := os.Stat(artifact.PackagedPath); err != nil {
 		t.Fatalf("app tar missing: %v", err)
+	}
+}
+
+func TestDryRunArtifactSetIsStrictlyVerifiedAndReusable(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\nproject(reuse C)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "main.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{
+		ProjectDir: project,
+		Target:     profile,
+		OutDir:     filepath.Join(root, "dist"),
+		DryRun:     true,
+		Version:    "test",
+	}
+	first, err := Build(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := verify.ArtifactSet(first.PackageDir, verify.Options{Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Valid || len(report.Findings) != 0 {
+		t.Fatalf("fresh artifact set failed strict verification: %+v", report.Findings)
+	}
+	config.Reuse = true
+	second, err := Build(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Reused || second.Manifest.BuildID != first.Manifest.BuildID {
+		t.Fatalf("matching artifact set was not reused: first=%+v second=%+v", first.Manifest, second.Manifest)
+	}
+}
+
+func TestPublishFailurePreservesPreviousArtifactSet(t *testing.T) {
+	root := t.TempDir()
+	finalDir := filepath.Join(root, "target")
+	stagingDir := filepath.Join(root, "staging")
+	if err := os.MkdirAll(finalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(finalDir, "marker"), []byte("previous"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A missing manifest makes the staging set ineligible for publication.
+	if err := publishArtifactSet(stagingDir, finalDir); err == nil {
+		t.Fatal("expected incomplete staging publication to fail")
+	}
+	data, err := os.ReadFile(filepath.Join(finalDir, "marker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "previous" {
+		t.Fatalf("previous artifact set was modified: %q", data)
+	}
+}
+
+func TestDryRunReuseIgnoresCustomOutputDirectoryInsideProject(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\nproject(custom_output C)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "main.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customOut := filepath.Join(project, "release-cache")
+	config := Config{
+		ProjectDir: project,
+		Target:     profile,
+		OutDir:     customOut,
+		DryRun:     true,
+		Version:    "test",
+	}
+	first, err := Build(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Manifest.ProjectDigest == "" {
+		t.Fatal("first build did not record a project digest")
+	}
+	if err := os.WriteFile(filepath.Join(customOut, "generated-source.c"), []byte("#include <cuda_runtime.h>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config.Reuse = true
+	second, err := Build(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Reused {
+		t.Fatal("custom in-project output prevented verified reuse")
+	}
+	if second.Manifest.ProjectDigest != first.Manifest.ProjectDigest || second.Manifest.BuildID != first.Manifest.BuildID {
+		t.Fatalf("custom output changed build identity: first=%+v second=%+v", first.Manifest, second.Manifest)
+	}
+}
+
+func TestBuildRejectsOutputSymlinkResolvingToProjectRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges on Windows")
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\nproject(output_boundary C)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aliasParent := t.TempDir()
+	outAlias := filepath.Join(aliasParent, "project-output")
+	if err := os.Symlink(project, outAlias); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build(context.Background(), Config{
+		ProjectDir: project,
+		Target:     profile,
+		OutDir:     outAlias,
+		DryRun:     true,
+		Version:    "test",
+	}); err == nil || !strings.Contains(err.Error(), "must not be the project root") {
+		t.Fatalf("output symlink resolving to project root was not rejected: %v", err)
+	}
+}
+
+func TestBuildPortBootstrapsUnknownBuildSystemAndRedetectsCMake(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Mimic a Visual Studio/UWP-only source tree: source exists, but none of
+	// Miruri's portable build systems are present yet.
+	if err := os.WriteFile(filepath.Join(project, "MarbleMaze.vcxproj"), []byte("<Project></Project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "main.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeCodex := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+printf '%s' "$prompt" | grep -q 'feature-preserving platform port'
+cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(miruri_bootstrap_port C)
+add_executable(miruri-bootstrap main.c)
+CMAKE
+printf '%s\n' '{"type":"thread.started","thread_id":"bootstrap_thread"}'
+printf '%s\n' '{"type":"turn.completed","turn_id":"bootstrap_turn","usage":{"input_tokens":10,"output_tokens":5}}'
+cat >"$out" <<'JSON'
+{"status":"ported","summary":"Generated a portable CMake build system.","changed_files":["CMakeLists.txt"],"assumptions":[],"remaining_risks":[]}
+JSON
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	result, err := Build(context.Background(), Config{
+		ProjectDir:   project,
+		Target:       profile,
+		OutDir:       filepath.Join(root, "dist"),
+		UseCodex:     true,
+		CodexMode:    codex.TaskPort,
+		MaxRepairs:   1,
+		CodexBinary:  fakeCodex,
+		CodexAuth:    codex.AuthChatGPT,
+		CodexTimeout: time.Minute,
+		Version:      "test",
+		Timeout:      2 * time.Minute,
+		Progress:     &progress,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap port failed: %v\nprogress:\n%s", err, progress.String())
+	}
+	if result.Manifest.BuildSystem != model.BuildSystemCMake {
+		t.Fatalf("build system = %s, want cmake", result.Manifest.BuildSystem)
+	}
+	if len(result.Manifest.Artifacts) == 0 {
+		t.Fatal("bootstrap port produced no artifacts")
+	}
+	if !strings.Contains(progress.String(), "no supported native build system detected") {
+		t.Fatalf("bootstrap progress message missing:\n%s", progress.String())
+	}
+	if !strings.Contains(progress.String(), "unknown -> cmake after Codex port") {
+		t.Fatalf("build-system re-detection message missing:\n%s", progress.String())
+	}
+}
+
+func TestBuildPortFidelityGateRejectsReplacementAndRetries(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "LegacyOnly.vcxproj"), []byte("<Project></Project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "original_a.c"), []byte("int original_helper(void); int main(void) { return original_helper() == 7 ? 0 : 1; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "original_b.c"), []byte("int original_helper(void) { return 7; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeCodex := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+printf '%s' "$prompt" | grep -q 'NOT a clone, remake, visual approximation'
+printf '%s' "$prompt" | grep -q 'original_a.c'
+printf '%s' "$prompt" | grep -q 'original_b.c'
+if [ ! -f replacement.c ]; then
+  cat > replacement.c <<'C'
+int main(void) { return 0; }
+C
+  cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(replacement_port C)
+add_executable(port replacement.c)
+CMAKE
+  summary='Created a target backend.'
+  changed='["replacement.c","CMakeLists.txt"]'
+else
+  printf '%s' "$prompt" | grep -q 'feature-fidelity gate rejected linked artifact'
+  cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(preserved_port C)
+add_executable(port original_a.c original_b.c)
+CMAKE
+  summary='Rewired the target build to preserve the original implementation.'
+  changed='["CMakeLists.txt"]'
+fi
+printf '%s\n' '{"type":"thread.started","thread_id":"fidelity_thread"}'
+printf '%s\n' '{"type":"turn.completed","turn_id":"fidelity_turn","usage":{"input_tokens":10,"output_tokens":5}}'
+printf '{"status":"ported","summary":"%s","changed_files":%s,"assumptions":[],"remaining_risks":[]}\n' "$summary" "$changed" > "$out"
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	result, err := Build(context.Background(), Config{
+		ProjectDir:   project,
+		Target:       profile,
+		OutDir:       filepath.Join(root, "dist"),
+		UseCodex:     true,
+		CodexMode:    codex.TaskPort,
+		MaxRepairs:   2,
+		CodexBinary:  fakeCodex,
+		CodexAuth:    codex.AuthChatGPT,
+		CodexTimeout: time.Minute,
+		Version:      "test",
+		Timeout:      2 * time.Minute,
+		Progress:     &progress,
+	})
+	if err != nil {
+		t.Fatalf("fidelity retry port failed: %v\nprogress:\n%s", err, progress.String())
+	}
+	if len(result.Manifest.CodexRepairs) != 2 {
+		t.Fatalf("expected two Codex attempts, got %+v", result.Manifest.CodexRepairs)
+	}
+	log := progress.String()
+	if !strings.Contains(log, "feature-fidelity gate rejected linked artifact") {
+		t.Fatalf("fidelity rejection missing from progress:\n%s", log)
+	}
+	if !strings.Contains(log, "target build compiles 0 pre-existing translation unit(s) out of 2") {
+		t.Fatalf("original-source reuse diagnostic missing:\n%s", log)
+	}
+	if !strings.Contains(log, "feature-fidelity gate: PASS; target build reuses 2/2") {
+		t.Fatalf("fidelity pass missing after retry:\n%s", log)
+	}
+}
+
+func TestBuildReloadsInstructionsFileBetweenCodexAttempts(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "LegacyOnly.vcxproj"), []byte("<Project></Project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "original.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	instructionsFile := filepath.Join(root, "live.md")
+	if err := os.WriteFile(instructionsFile, []byte("FIRST LIVE INSTRUCTION\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeCodex := filepath.Join(root, "codex")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+if printf '%%s' "$prompt" | grep -q 'Attempt: 1'; then
+  printf '%%s' "$prompt" | grep -q 'FIRST LIVE INSTRUCTION'
+  printf '%%s' "$prompt" | grep -q 'FIXED INLINE INSTRUCTION'
+  printf 'SECOND LIVE INSTRUCTION\n' > %q
+  printf '%%s\n' '{"type":"thread.started","thread_id":"live_1"}'
+  printf '%%s\n' '{"type":"turn.completed","turn_id":"live_turn_1","usage":{"input_tokens":10,"output_tokens":5}}'
+  printf '%%s\n' '{"status":"blocked","summary":"Continue after live instruction edit.","changed_files":[],"assumptions":[],"remaining_risks":["Portable build system remains."]}' > "$out"
+  exit 0
+fi
+printf '%%s' "$prompt" | grep -q 'SECOND LIVE INSTRUCTION'
+if printf '%%s' "$prompt" | grep -q 'FIRST LIVE INSTRUCTION'; then exit 19; fi
+printf '%%s' "$prompt" | grep -q 'FIXED INLINE INSTRUCTION'
+cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(live_reload C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_executable(port original.c)
+CMAKE
+printf '%%s\n' '{"type":"thread.started","thread_id":"live_2"}'
+printf '%%s\n' '{"type":"turn.completed","turn_id":"live_turn_2","usage":{"input_tokens":10,"output_tokens":5}}'
+printf '%%s\n' '{"status":"ported","summary":"Portable build created after live reload.","changed_files":["CMakeLists.txt"],"assumptions":[],"remaining_risks":[]}' > "$out"
+`, instructionsFile)
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := os.ReadFile(instructionsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	result, err := Build(context.Background(), Config{
+		ProjectDir:              project,
+		Target:                  profile,
+		OutDir:                  filepath.Join(root, "dist"),
+		UseCodex:                true,
+		CodexMode:               codex.TaskPort,
+		MaxRepairs:              2,
+		CodexBinary:             fakeCodex,
+		CodexAuth:               codex.AuthChatGPT,
+		CodexTimeout:            time.Minute,
+		CodexInstructions:       strings.TrimSpace(string(initial)) + "\n\nFIXED INLINE INSTRUCTION",
+		CodexInstructionsInline: "FIXED INLINE INSTRUCTION",
+		CodexInstructionsFile:   instructionsFile,
+		Version:                 "test",
+		Timeout:                 2 * time.Minute,
+		Progress:                &progress,
+	})
+	if err != nil {
+		t.Fatalf("live instructions reload build failed: %v\nprogress:\n%s", err, progress.String())
+	}
+	if len(result.Manifest.CodexRepairs) != 2 {
+		t.Fatalf("expected two Codex attempts, got %+v", result.Manifest.CodexRepairs)
+	}
+	if !strings.Contains(progress.String(), "Miruri Codex instructions: reloaded") {
+		t.Fatalf("live reload diagnostic missing:\n%s", progress.String())
+	}
+}
+
+func TestDeclaredFeatureLossRecognizesReplacementAdmissions(t *testing.T) {
+	bad := []string{
+		"The original physics implementation is approximated by native gameplay logic.",
+		"The renderer does not yet decode the original SDKMesh assets.",
+		"The WMA background track is packaged but not played.",
+		"A procedural scene is the closest locally implementable equivalent.",
+	}
+	for _, value := range bad {
+		if !declaredFeatureLoss(value) {
+			t.Fatalf("expected fidelity loss to be recognized: %q", value)
+		}
+	}
+	good := []string{
+		"The target artifact was compiled but not executed.",
+		"Runtime validation was intentionally not performed.",
+	}
+	for _, value := range good {
+		if declaredFeatureLoss(value) {
+			t.Fatalf("runtime-only caveat must not be treated as feature loss: %q", value)
+		}
+	}
+}
+
+func TestBuildPortRetriesBlockedWithoutChanges(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "LegacyOnly.vcxproj"), []byte("<Project></Project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "original.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeCodex := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+printf '%s' "$prompt" | grep -q 'NOT a reason to stop'
+printf '%s' "$prompt" | grep -q 'status "progress"'
+if printf '%s' "$prompt" | grep -q 'Attempt: 1'; then
+  printf '%s\n' '{"type":"thread.started","thread_id":"blocked_thread"}'
+  printf '%s\n' '{"type":"turn.completed","turn_id":"blocked_turn","usage":{"input_tokens":10,"output_tokens":5}}'
+  printf '%s\n' '{"status":"blocked","summary":"A broad native backend is required.","changed_files":[],"assumptions":[],"remaining_risks":["Rendering and input still require target-native adapters."]}' > "$out"
+  exit 0
+fi
+printf '%s' "$prompt" | grep -q 'Previous port attempt 1 returned status "blocked"'
+printf '%s' "$prompt" | grep -q 'This attempt must make edits'
+cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(blocked_retry C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_executable(port original.c)
+CMAKE
+printf '%s\n' '{"type":"thread.started","thread_id":"ported_thread"}'
+printf '%s\n' '{"type":"turn.completed","turn_id":"ported_turn","usage":{"input_tokens":10,"output_tokens":5}}'
+printf '%s\n' '{"status":"ported","summary":"Created the portable build while preserving the original implementation.","changed_files":["CMakeLists.txt"],"assumptions":[],"remaining_risks":[]}' > "$out"
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	result, err := Build(context.Background(), Config{
+		ProjectDir:   project,
+		Target:       profile,
+		OutDir:       filepath.Join(root, "dist"),
+		UseCodex:     true,
+		CodexMode:    codex.TaskPort,
+		MaxRepairs:   2,
+		CodexBinary:  fakeCodex,
+		CodexAuth:    codex.AuthChatGPT,
+		CodexTimeout: time.Minute,
+		Version:      "test",
+		Timeout:      2 * time.Minute,
+		Progress:     &progress,
+	})
+	if err != nil {
+		t.Fatalf("blocked port should continue and recover: %v\nprogress:\n%s", err, progress.String())
+	}
+	if len(result.Manifest.CodexRepairs) != 2 {
+		t.Fatalf("expected two Codex attempts, got %+v", result.Manifest.CodexRepairs)
+	}
+	if result.Manifest.CodexRepairs[0].Status != "blocked" || result.Manifest.CodexRepairs[1].Status != "ported" {
+		t.Fatalf("unexpected Codex status sequence: %+v", result.Manifest.CodexRepairs)
+	}
+	log := progress.String()
+	if !strings.Contains(log, `Codex status "blocked" is non-terminal`) {
+		t.Fatalf("blocked continuation diagnostic missing:\n%s", log)
+	}
+	if !strings.Contains(log, "Miruri build system: unknown -> cmake after Codex port") {
+		t.Fatalf("build-system bootstrap after blocked retry missing:\n%s", log)
+	}
+}
+
+func TestNonBlockingPortCaveatClassification(t *testing.T) {
+	advisory := []string{
+		"今回の変更を含む完全な再リンクはbuild directoryの書き込み権限不足により未確認です。",
+		"WMA decoder fallback、UI orientation/layout、multi-touch、Metal描画、入力、物理、音声の実機挙動は未検証です。",
+		"motion対応controllerがないMacにはaccelerometer相当入力がありません。",
+		"UI overlayは毎frame CPU bitmapとMetal textureを再生成しており、最適化余地があります。",
+		"The target artifact was not executed.",
+		"MacGame still duplicates substantial orchestration from MarbleMazeMain, including state transitions, checkpoint progression, scoring, camera updates, and UI state. The original UserInterface, SampleOverlay, and LoadScreen implementations also remain unported to native macOS services.",
+	}
+	for _, value := range advisory {
+		if !nonBlockingPortCaveat(value) {
+			t.Fatalf("expected advisory caveat: %q", value)
+		}
+	}
+	blocking := []string{
+		"AVAudioEnvironmentNodeでは元の独立room sendと4-channel output matrixを完全には再現できません。",
+		"Rendering and input still require target-native adapters.",
+		"Palette-indexed DDS files used by the shipped project are unsupported.",
+		"MacGame duplicates orchestration and the checkpoint scoring behavior differs from the original.",
+		"MacGame duplicates orchestration but the original pause state is missing.",
+	}
+	for _, value := range blocking {
+		if nonBlockingPortCaveat(value) {
+			t.Fatalf("project-relevant risk must not be advisory: %q", value)
+		}
+	}
+}
+
+func TestBuildPromotesProgressAfterSuccessfulRebuildWithOnlyAdvisoryRisks(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "LegacyOnly.vcxproj"), []byte("<Project></Project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "original.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeCodex := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+printf '%s' "$prompt" | grep -q 'remaining_risks array is reserved for known, project-relevant unresolved fidelity blockers'
+cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(progress_advisory C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_executable(port original.c)
+CMAKE
+printf '%s\n' '{"type":"thread.started","thread_id":"progress_advisory"}'
+printf '%s\n' '{"type":"turn.completed","turn_id":"progress_advisory_turn","usage":{"input_tokens":10,"output_tokens":5}}'
+printf '%s\n' '{"status":"progress","summary":"Port implementation is linked; advisory validation caveats remain.","changed_files":["CMakeLists.txt"],"assumptions":[],"remaining_risks":["今回の変更を含む完全な再リンクはbuild directoryの書き込み権限不足により未確認です。","実機挙動は未検証です。","motion対応controllerがないMacにはaccelerometer相当入力がありません。","UI overlayには最適化余地があります。","MacGame still duplicates substantial orchestration from MarbleMazeMain, including state transitions, checkpoint progression, scoring, camera updates, and UI state. The original UserInterface, SampleOverlay, and LoadScreen implementations also remain unported to native macOS services."]}' > "$out"
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	result, err := Build(context.Background(), Config{
+		ProjectDir:   project,
+		Target:       profile,
+		OutDir:       filepath.Join(root, "dist"),
+		UseCodex:     true,
+		CodexMode:    codex.TaskPort,
+		MaxRepairs:   2,
+		CodexBinary:  fakeCodex,
+		CodexAuth:    codex.AuthChatGPT,
+		CodexTimeout: time.Minute,
+		Version:      "test",
+		Timeout:      2 * time.Minute,
+		Progress:     &progress,
+	})
+	if err != nil {
+		t.Fatalf("advisory progress should be promoted after Miruri rebuild: %v\nprogress:\n%s", err, progress.String())
+	}
+	if len(result.Manifest.CodexRepairs) != 1 {
+		t.Fatalf("expected one Codex attempt, got %+v", result.Manifest.CodexRepairs)
+	}
+	log := progress.String()
+	if !strings.Contains(log, `promoted Codex status "progress"`) {
+		t.Fatalf("progress promotion diagnostic missing:\n%s", log)
+	}
+	if !strings.Contains(log, "feature-fidelity gate: PASS") {
+		t.Fatalf("fidelity pass missing:\n%s", log)
+	}
+}
+
+func TestBuildProgressStillRetriesProjectRelevantRemainingRisk(t *testing.T) {
+	requireNativeCLinker(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX fake Codex CLI")
+	}
+	for _, tool := range []string{"git", "clang", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "LegacyOnly.vcxproj"), []byte("<Project></Project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "original.c"), []byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeCodex := filepath.Join(root, "codex")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--help" ]; then echo "--ask-for-approval"; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then echo "--json --ephemeral --ignore-user-config --ignore-rules --sandbox --output-schema --output-last-message"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "codex-cli test"; exit 0; fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "${1:-}" = "--ask-for-approval" ] && [ "${2:-}" = "never" ]; then shift 2; fi
+if [ "${1:-}" != "exec" ]; then exit 8; fi
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --output-last-message) shift; out="$1" ;; esac
+  shift || true
+done
+prompt="$(cat)"
+if printf '%s' "$prompt" | grep -q 'Attempt: 1'; then
+  cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(progress_blocker C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_executable(port original.c)
+CMAKE
+  printf '%s\n' '{"type":"thread.started","thread_id":"progress_blocker_1"}'
+  printf '%s\n' '{"type":"turn.completed","turn_id":"progress_blocker_turn_1","usage":{"input_tokens":10,"output_tokens":5}}'
+  printf '%s\n' '{"status":"progress","summary":"A real fidelity gap remains.","changed_files":["CMakeLists.txt"],"assumptions":[],"remaining_risks":["AVAudioEnvironmentNodeでは元の独立room sendと4-channel output matrixを完全には再現できません。"]}' > "$out"
+  exit 0
+fi
+printf '%s' "$prompt" | grep -q 're-evaluate project relevance, then fix if actually exercised'
+printf '%s\n' '{"type":"thread.started","thread_id":"progress_blocker_2"}'
+printf '%s\n' '{"type":"turn.completed","turn_id":"progress_blocker_turn_2","usage":{"input_tokens":10,"output_tokens":5}}'
+printf '%s\n' '{"status":"ported","summary":"Project-relevant fidelity gap resolved.","changed_files":[],"assumptions":[],"remaining_risks":[]}' > "$out"
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := target.Resolve("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	result, err := Build(context.Background(), Config{
+		ProjectDir:   project,
+		Target:       profile,
+		OutDir:       filepath.Join(root, "dist"),
+		UseCodex:     true,
+		CodexMode:    codex.TaskPort,
+		MaxRepairs:   2,
+		CodexBinary:  fakeCodex,
+		CodexAuth:    codex.AuthChatGPT,
+		CodexTimeout: time.Minute,
+		Version:      "test",
+		Timeout:      2 * time.Minute,
+		Progress:     &progress,
+	})
+	if err != nil {
+		t.Fatalf("project-relevant risk should retry and recover: %v\nprogress:\n%s", err, progress.String())
+	}
+	if len(result.Manifest.CodexRepairs) != 2 {
+		t.Fatalf("expected two Codex attempts, got %+v", result.Manifest.CodexRepairs)
+	}
+	if !strings.Contains(progress.String(), "unresolved project-relevant risk") {
+		t.Fatalf("project-relevant blocker diagnostic missing:\n%s", progress.String())
+	}
+}
+
+func TestPreservePortedSourceCopiesFinalCodexWorkspace(t *testing.T) {
+	sourceDir := filepath.Join(t.TempDir(), "source")
+	packageDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceDir, "C++", "Mac"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "C++", "Mac", "MacGame.mm"), []byte("// final ported source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, ".git", "config"), []byte("temporary git metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bc := &buildContext{
+		sourceDir:  sourceDir,
+		packageDir: packageDir,
+		codexRepairs: []model.CodexRepairAttempt{{
+			Attempt: 1,
+			Status:  "ported",
+		}},
+	}
+	rel, err := bc.preservePortedSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel != "ported-source" {
+		t.Fatalf("ported source dir = %q, want ported-source", rel)
+	}
+	if _, err := os.Stat(filepath.Join(packageDir, "ported-source", "C++", "Mac", "MacGame.mm")); err != nil {
+		t.Fatalf("final ported source was not preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(packageDir, "ported-source", ".git", "config")); !os.IsNotExist(err) {
+		t.Fatalf("disposable repair git metadata should not be published, stat err=%v", err)
 	}
 }

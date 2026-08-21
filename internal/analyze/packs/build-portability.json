@@ -1,0 +1,47 @@
+{
+  "id": "build-portability",
+  "version": "0.2.0",
+  "description": "Cross-build assumptions embedded in build-system files",
+  "rules": [
+    {
+      "id": "native-cpu-flags",
+      "description": "Build flags bind generated code to the build host CPU",
+      "domain": "build",
+      "capability": "build.native-cpu-flags",
+      "hard": true,
+      "patterns": ["-march=native", "-mcpu=native", "-mtune=native"],
+      "file_names": ["CMakeLists.txt", "Makefile", "makefile", "GNUmakefile", "meson.build", "configure.ac", "configure.in"],
+      "allow_text": true
+    },
+    {
+      "id": "hardcoded-x86-flags",
+      "description": "Build files force x86 ISA extensions without a target guard",
+      "domain": "build",
+      "capability": "build.hardcoded-x86-flags",
+      "hard": true,
+      "patterns": ["-mavx", "-msse", "/arch:AVX", "/arch:SSE"],
+      "file_names": ["CMakeLists.txt", "Makefile", "makefile", "GNUmakefile", "meson.build", "configure.ac", "configure.in"],
+      "allow_text": true
+    },
+    {
+      "id": "hardcoded-arm-flags",
+      "description": "Build files force ARM ISA extensions without a target guard",
+      "domain": "build",
+      "capability": "build.hardcoded-arm-flags",
+      "hard": true,
+      "patterns": ["-mfpu=neon", "-march=armv", "-msve-vector-bits"],
+      "file_names": ["CMakeLists.txt", "Makefile", "makefile", "GNUmakefile", "meson.build", "configure.ac", "configure.in"],
+      "allow_text": true
+    },
+    {
+      "id": "target-execution-probe",
+      "description": "Configure-time probes may attempt to execute target binaries while cross-compiling",
+      "domain": "build",
+      "capability": "build.target-execution-probe",
+      "hard": true,
+      "patterns": ["try_run(", "AC_RUN_IFELSE("],
+      "file_names": ["CMakeLists.txt", "configure.ac", "configure.in"],
+      "allow_text": true
+    }
+  ]
+}

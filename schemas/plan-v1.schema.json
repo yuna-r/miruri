@@ -3,35 +3,167 @@
   "$id": "https://miruri.dev/schema/plan-v1.json",
   "title": "Miruri Porting Plan v1",
   "type": "object",
-  "required": ["schema_version", "generated_at", "project_name", "target", "status", "items", "environment"],
+  "required": [
+    "schema_version",
+    "generated_at",
+    "project_name",
+    "target",
+    "status",
+    "items",
+    "environment"
+  ],
   "properties": {
-    "schema_version": {"const": "miruri.plan.v1"},
-    "generated_at": {"type": "string", "format": "date-time"},
-    "project_name": {"type": "string"},
-    "target": {"type": "object", "required": ["id", "os", "arch", "triple", "object_format"]},
-    "status": {"enum": ["ready", "review", "blocked"]},
+    "schema_version": {
+      "const": "miruri.plan.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "id",
+        "display_name",
+        "os",
+        "arch",
+        "triple",
+        "object_format",
+        "cmake_system_name",
+        "cmake_processor",
+        "default_linker",
+        "requires_sysroot",
+        "requires_platform_sdk",
+        "capabilities"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "triple": {
+          "type": "string",
+          "minLength": 1
+        },
+        "object_format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cmake_system_name": {
+          "type": "string"
+        },
+        "cmake_processor": {
+          "type": "string"
+        },
+        "default_linker": {
+          "type": "string"
+        },
+        "requires_sysroot": {
+          "type": "boolean"
+        },
+        "requires_platform_sdk": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "review",
+        "blocked"
+      ]
+    },
     "items": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["requirement", "strategy", "reason", "blocking"],
+        "required": [
+          "requirement",
+          "strategy",
+          "reason",
+          "blocking"
+        ],
         "properties": {
-          "requirement": {"type": "string"},
+          "requirement": {
+            "type": "string"
+          },
           "strategy": {
             "enum": [
-              "native-rebuild", "source-rewrite", "generated-adapter",
-              "compatibility-runtime", "api-translation", "replacement-dependency",
-              "manual-review", "unresolved"
+              "native-rebuild",
+              "source-rewrite",
+              "generated-adapter",
+              "compatibility-runtime",
+              "api-translation",
+              "replacement-dependency",
+              "manual-review",
+              "unresolved"
             ]
           },
-          "provider": {"type": "string"},
-          "reason": {"type": "string"},
-          "blocking": {"type": "boolean"}
-        }
+          "provider": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
-    "environment": {"type": "array"},
-    "warnings": {"type": "array", "items": {"type": "string"}}
+    "environment": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "required",
+          "reason"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

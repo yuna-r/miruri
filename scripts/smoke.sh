@@ -22,5 +22,17 @@ fi
 "$MIRURI" plan --target host "$ROOT/fixtures/hello-c"
 "$MIRURI" build --target host --out "$OUT" "$ROOT/fixtures/hello-c"
 
-find "$OUT" -name manifest.json -type f | grep -q .
+MANIFEST=$(find "$OUT" -mindepth 2 -maxdepth 2 -name manifest.json -type f | head -n 1)
+if [[ -z "$MANIFEST" ]]; then
+  printf 'Miruri smoke: manifest was not generated under %s\n' "$OUT" >&2
+  exit 1
+fi
+ARTIFACT_SET=$(dirname "$MANIFEST")
+
+"$MIRURI" verify --strict "$ARTIFACT_SET"
+"$MIRURI" build --target host --out "$OUT" --reuse "$ROOT/fixtures/hello-c" | grep -q 'Reused:              true'
+"$MIRURI" compare "$ARTIFACT_SET" "$ARTIFACT_SET"
+"$MIRURI" matrix --plan-only --targets host,linux-arm64 --jobs 2 --out "$OUT/matrix" "$ROOT/fixtures/hello-c"
+
+test -f "$OUT/matrix/matrix.json"
 printf 'Miruri smoke test passed: %s\n' "$OUT"

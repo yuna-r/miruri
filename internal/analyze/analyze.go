@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yuna-r/miruri/internal/fingerprint"
+	"github.com/yuna-r/miruri/internal/fsutil"
 	"github.com/yuna-r/miruri/internal/model"
 )
 
@@ -36,11 +38,14 @@ type DetectionRule struct {
 	Hard        bool     `json:"hard"`
 	Patterns    []string `json:"patterns"`
 	Extensions  []string `json:"extensions"`
+	FileNames   []string `json:"file_names"`
 	PathParts   []string `json:"path_parts"`
+	AllowText   bool     `json:"allow_text"`
 }
 
 type Options struct {
 	FollowSymlinks bool
+	ExcludePaths   []string
 }
 
 type scannedFile struct {
@@ -54,7 +59,7 @@ type scannedFile struct {
 }
 
 func Project(root string, opts Options) (model.AnalysisReport, error) {
-	abs, err := filepath.Abs(root)
+	abs, err := fsutil.CanonicalPath(root)
 	if err != nil {
 		return model.AnalysisReport{}, fmt.Errorf("resolve project path: %w", err)
 	}
@@ -64,6 +69,11 @@ func Project(root string, opts Options) (model.AnalysisReport, error) {
 	}
 	if !info.IsDir() {
 		return model.AnalysisReport{}, fmt.Errorf("project path is not a directory: %s", abs)
+	}
+
+	fingerprintResult, err := fingerprint.Project(abs, fingerprint.Options{ExcludePaths: opts.ExcludePaths})
+	if err != nil {
+		return model.AnalysisReport{}, err
 	}
 
 	packs, err := loadPacks()
@@ -77,11 +87,15 @@ func Project(root string, opts Options) (model.AnalysisReport, error) {
 	}
 
 	report := model.AnalysisReport{
-		SchemaVersion: "miruri.analysis.v1",
-		GeneratedAt:   time.Now().UTC(),
-		ProjectName:   filepath.Base(abs),
-		ProjectPath:   abs,
-		Languages:     map[string]int{},
+		SchemaVersion:  "miruri.analysis.v1",
+		GeneratedAt:    time.Now().UTC(),
+		ProjectName:    filepath.Base(abs),
+		ProjectPath:    abs,
+		ProjectDigest:  fingerprintResult.Digest,
+		ProjectEntries: fingerprintResult.FileCount,
+		ProjectBytes:   fingerprintResult.ByteCount,
+		Languages:      map[string]int{},
+		Requirements:   []model.CapabilityRequirement{},
 		Graph: model.ProjectGraph{
 			Nodes: []model.GraphNode{{
 				ID:   "project:root",
@@ -89,8 +103,9 @@ func Project(root string, opts Options) (model.AnalysisReport, error) {
 				Name: filepath.Base(abs),
 				Path: abs,
 			}},
+			Edges: []model.GraphEdge{},
 		},
-		Warnings: warnings,
+		Warnings: append(append([]string(nil), fingerprintResult.Warnings...), warnings...),
 	}
 
 	report.BuildSystems = detectBuildSystems(abs)
@@ -204,7 +219,11 @@ func loadPacks() ([]PackManifest, error) {
 func scanFiles(root string, opts Options) ([]scannedFile, []string, error) {
 	var files []scannedFile
 	var warnings []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	excludedPaths, err := normalizeExcludedPaths(root, opts.ExcludePaths)
+	if err != nil {
+		return nil, warnings, err
+	}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			warnings = append(warnings, fmt.Sprintf("cannot access %s: %v", path, walkErr))
 			return nil
@@ -212,6 +231,12 @@ func scanFiles(root string, opts Options) ([]scannedFile, []string, error) {
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
+		}
+		if rel != "." && excludedPaths[filepath.Clean(path)] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			if rel != "." && shouldSkipDir(d.Name()) {
@@ -250,7 +275,7 @@ func scanFiles(root string, opts Options) ([]scannedFile, []string, error) {
 }
 
 func matchRule(f scannedFile, rule DetectionRule) (bool, string, int) {
-	hasCriteria := len(rule.Extensions) > 0 || len(rule.Patterns) > 0 || len(rule.PathParts) > 0
+	hasCriteria := len(rule.Extensions) > 0 || len(rule.FileNames) > 0 || len(rule.Patterns) > 0 || len(rule.PathParts) > 0
 	if !hasCriteria {
 		return false, "", 0
 	}
@@ -258,6 +283,19 @@ func matchRule(f scannedFile, rule DetectionRule) (bool, string, int) {
 		matched := false
 		for _, ext := range rule.Extensions {
 			if strings.EqualFold(f.Ext, ext) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, "", 0
+		}
+	}
+	if len(rule.FileNames) > 0 {
+		matched := false
+		name := filepath.Base(f.RelPath)
+		for _, candidate := range rule.FileNames {
+			if strings.EqualFold(name, candidate) {
 				matched = true
 				break
 			}
@@ -284,7 +322,7 @@ func matchRule(f scannedFile, rule DetectionRule) (bool, string, int) {
 		// README and design documents frequently mention APIs and would otherwise
 		// create false project requirements. Build-file detection will use explicit
 		// build-domain rules in a later pack.
-		if !f.IsText || f.Language == "" {
+		if !f.IsText || (f.Language == "" && !rule.AllowText) {
 			return false, "", 0
 		}
 		lower := strings.ToLower(f.Text)
@@ -343,9 +381,40 @@ func exists(path string) bool {
 	return err == nil
 }
 
+func normalizeExcludedPaths(root string, values []string) (map[string]bool, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project exclusion root: %w", err)
+	}
+	result := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		candidate := filepath.FromSlash(value)
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(rootAbs, candidate)
+		}
+		absolute, err := fsutil.CanonicalPath(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("resolve project exclusion %q: %w", value, err)
+		}
+		relative, err := filepath.Rel(rootAbs, absolute)
+		if err != nil {
+			return nil, fmt.Errorf("relativize project exclusion %q: %w", value, err)
+		}
+		if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
+			continue
+		}
+		result[absolute] = true
+	}
+	return result, nil
+}
+
 func shouldSkipDir(name string) bool {
 	switch name {
-	case ".git", ".hg", ".svn", ".miruri", "dist", "build", "out", "node_modules", ".idea", ".vscode", "target", "__pycache__":
+	case ".git", ".hg", ".svn", ".codex", ".miruri", "dist", "build", "out", "node_modules", ".idea", ".vscode", "target", "__pycache__":
 		return true
 	default:
 		return false

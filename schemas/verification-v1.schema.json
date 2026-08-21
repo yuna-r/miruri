@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/verification-v1.json",
+  "title": "Miruri Artifact Verification Report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "verified_at",
+    "package_dir",
+    "manifest_path",
+    "valid",
+    "checked_files",
+    "findings",
+    "manifest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.verification.v1"
+    },
+    "verified_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "package_dir": {
+      "type": "string"
+    },
+    "manifest_path": {
+      "type": "string"
+    },
+    "target_id": {
+      "type": "string"
+    },
+    "build_id": {
+      "type": "string"
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "checked_files": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "manifest": {
+      "$ref": "https://miruri.dev/schema/manifest-v1.json"
+    }
+  },
+  "additionalProperties": false
+}

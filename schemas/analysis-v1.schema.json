@@ -3,40 +3,207 @@
   "$id": "https://miruri.dev/schema/analysis-v1.json",
   "title": "Miruri Analysis Report v1",
   "type": "object",
-  "required": ["schema_version", "generated_at", "project_name", "project_path", "build_systems", "languages", "requirements", "graph"],
+  "required": [
+    "schema_version",
+    "generated_at",
+    "project_name",
+    "project_path",
+    "build_systems",
+    "languages",
+    "file_count",
+    "text_file_count",
+    "binary_count",
+    "requirements",
+    "graph"
+  ],
   "properties": {
-    "schema_version": {"const": "miruri.analysis.v1"},
-    "generated_at": {"type": "string", "format": "date-time"},
-    "project_name": {"type": "string"},
-    "project_path": {"type": "string"},
-    "build_systems": {"type": "array", "items": {"type": "string"}},
-    "languages": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
-    "file_count": {"type": "integer", "minimum": 0},
-    "text_file_count": {"type": "integer", "minimum": 0},
-    "binary_count": {"type": "integer", "minimum": 0},
+    "schema_version": {
+      "const": "miruri.analysis.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "project_entries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "project_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "build_systems": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "cmake",
+          "meson",
+          "autotools",
+          "make",
+          "unknown"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "languages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "text_file_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "binary_count": {
+      "type": "integer",
+      "minimum": 0
+    },
     "requirements": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "domain", "description", "hard", "evidence"],
+        "required": [
+          "id",
+          "domain",
+          "description",
+          "hard",
+          "evidence"
+        ],
         "properties": {
-          "id": {"type": "string"},
-          "domain": {"type": "string"},
-          "description": {"type": "string"},
-          "hard": {"type": "boolean"},
-          "evidence": {"type": "array"}
-        }
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "domain": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "hard": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "rule_id"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "rule_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
       }
     },
     "graph": {
       "type": "object",
-      "required": ["nodes", "edges"],
+      "required": [
+        "nodes",
+        "edges"
+      ],
       "properties": {
-        "nodes": {"type": "array"},
-        "edges": {"type": "array"}
-      }
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "from",
+              "to",
+              "kind"
+            ],
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     },
-    "warnings": {"type": "array", "items": {"type": "string"}}
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

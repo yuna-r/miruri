@@ -293,3 +293,79 @@ func TestPortAndAutoPromptsAuthorizeNewPlatformBackend(t *testing.T) {
 		}
 	}
 }
+
+func TestPortPromptSupportsIncrementalProgressAndMacAdapters(t *testing.T) {
+	request := RepairRequest{
+		Mode:                  TaskPort,
+		Target:                model.TargetProfile{ID: "macos-arm64", OS: "macos", Arch: "arm64", Triple: "arm64-apple-darwin", ObjectFormat: "mach-o"},
+		BuildSystem:           model.BuildSystemUnknown,
+		Attempt:               2,
+		MiruriVersion:         "test",
+		PreservationBaseline:  "Original translation units: 12",
+		ContinuationDirective: `Previous port attempt 1 returned status "blocked". Make concrete source/build changes.`,
+	}
+	prompt := buildPrompt(request, "build system unknown is not implemented")
+	for _, expected := range []string{
+		`return status "progress"`,
+		`Never return "blocked" merely because the port is broad`,
+		`C++/CX/UWP/WinRT coupling`,
+		`AppKit, Metal/MetalKit, CoreAudio/AVFoundation, GameController`,
+		`Objective-C++ (.mm) is allowed for thin macOS interop/adapters`,
+		`Previous port attempt 1 returned status "blocked"`,
+		`remaining_risks array is reserved for known, project-relevant unresolved fidelity blockers`,
+		`hypothetical unsupported input formats or edge cases that are not used by this project`,
+		`only advisory caveats remain, return "ported"/"repaired"`,
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("port prompt missing %q:\n%s", expected, prompt)
+		}
+	}
+}
+
+func TestPortContinuationStatusIncludesProgressAndBlocked(t *testing.T) {
+	for _, status := range []string{"progress", "blocked", "no-change"} {
+		if !portStatusAllowedBySchema(status) {
+			t.Fatalf("expected status %q to be allowed", status)
+		}
+	}
+}
+
+func portStatusAllowedBySchema(status string) bool {
+	return strings.Contains(repairResponseSchema, `"`+status+`"`)
+}
+
+func TestPromptIncludesBuiltInRelatedErrorCheckInstruction(t *testing.T) {
+	request := RepairRequest{
+		Mode:        TaskPort,
+		Target:      model.TargetProfile{ID: "macos-arm64", OS: "macos", Arch: "arm64", Triple: "arm64-apple-darwin", ObjectFormat: "mach-o"},
+		BuildSystem: model.BuildSystemCMake,
+		Attempt:     1,
+	}
+	prompt := buildPrompt(request, "compile error")
+	expected := "If an error occurs, do not only fix the line where the error occurred; also check related lines and related parts of other files to see whether errors could occur there as well, and fix them if necessary."
+	if !strings.Contains(prompt, expected) {
+		t.Fatalf("built-in related-error instruction missing from prompt:\n%s", prompt)
+	}
+}
+
+func TestPromptIncludesOperatorCustomInstructions(t *testing.T) {
+	request := RepairRequest{
+		Mode:               TaskPort,
+		Target:             model.TargetProfile{ID: "macos-arm64", OS: "macos", Arch: "arm64", Triple: "arm64-apple-darwin", ObjectFormat: "mach-o"},
+		BuildSystem:        model.BuildSystemCMake,
+		Attempt:            3,
+		MiruriVersion:      "test",
+		CustomInstructions: "Prioritize GameController support.\nKeep the original rolling-audio formulas.",
+	}
+	prompt := buildPrompt(request, "linker failure")
+	for _, expected := range []string{
+		"Operator-supplied custom instructions:",
+		"Prioritize GameController support.",
+		"Keep the original rolling-audio formulas.",
+		"Apply these operator instructions in addition to Miruri's target contract",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("custom instruction prompt missing %q:\n%s", expected, prompt)
+		}
+	}
+}

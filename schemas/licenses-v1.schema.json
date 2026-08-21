@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/licenses-v1.json",
+  "title": "Miruri License Evidence Report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "project_name",
+    "primary_expression",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.licenses.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "primary_expression": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256",
+          "size",
+          "root",
+          "confidence",
+          "detection"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "root": {
+            "type": "boolean"
+          },
+          "expressions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "confidence": {
+            "enum": [
+              "declared",
+              "text-match",
+              "unknown"
+            ]
+          },
+          "detection": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

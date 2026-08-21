@@ -32,6 +32,8 @@ func CreateWithOptions(analysis model.AnalysisReport, targetProfile model.Target
 		ProjectName:   analysis.ProjectName,
 		Target:        targetProfile,
 		Status:        "ready",
+		Items:         []model.PlanItem{},
+		Environment:   []model.EnvironmentRequirement{},
 	}
 
 	for _, requirement := range analysis.Requirements {
@@ -180,6 +182,156 @@ func selectStrategy(req model.CapabilityRequirement, targetProfile model.TargetP
 		item.Strategy = model.StrategyCompatibilityRuntime
 		item.Provider = "portable-thread-runtime"
 		item.Reason = "Use a portable threading runtime or generate a constrained Win32 implementation."
+	case req.ID == "build.native-cpu-flags" || req.ID == "build.hardcoded-x86-flags" || req.ID == "build.hardcoded-arm-flags":
+		item.Strategy = model.StrategySourceRewrite
+		item.Provider = "target-feature-flag-matrix"
+		item.Reason = "Replace host- or ISA-pinned flags with target-contract checks, feature probes and guarded optimized variants."
+	case req.ID == "build.target-execution-probe":
+		item.Strategy = model.StrategyGeneratedAdapter
+		item.Provider = "cross-probe-cache"
+		item.Reason = "Convert configure-time execution probes into compile/link probes or preseeded target facts; target binaries remain unexecuted."
+	case req.ID == "compute.cuda":
+		item.Strategy = model.StrategyGeneratedAdapter
+		item.Provider = "compute-backend-abstraction"
+		item.Reason = "Preserve the CUDA backend behind feature guards and add a declared target compute provider or CPU fallback."
+	case req.ID == "compute.opencl":
+		item.Strategy = model.StrategyReview
+		item.Provider = "opencl-runtime"
+		item.Reason = "Rebuild against a target OpenCL loader only after validating device/runtime availability and the required OpenCL feature level."
+	case req.ID == "compute.openmp":
+		item.Strategy = model.StrategyNativeRebuild
+		item.Provider = "openmp-runtime"
+		item.Reason = "Rebuild with the target OpenMP runtime and retain a serial fallback where the runtime is unavailable."
+	case req.ID == "cpu.arm.sve":
+		item.Strategy = model.StrategySourceRewrite
+		item.Provider = "sve-feature-guard-and-scalar-fallback"
+		item.Reason = "SVE is optional even on ARM64; retain the optimized path behind runtime/compiler guards and generate a scalar fallback."
+	case req.ID == "cpu.riscv.vector":
+		item.Strategy = model.StrategySourceRewrite
+		item.Provider = "rvv-feature-guard-and-scalar-fallback"
+		item.Reason = "RISC-V Vector support is profile-dependent; preserve the RVV path and provide a baseline scalar implementation."
+	case req.ID == "cpu.wasm.simd":
+		item.Strategy = model.StrategySourceRewrite
+		item.Provider = "portable-vector-fallback"
+		item.Reason = "WebAssembly SIMD intrinsics require a separate target path; lower the operation to a portable vector or scalar implementation."
+	case req.ID == "compiler.msvc-extensions":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "clang-ms-extensions"
+			item.Reason = "Compile in Microsoft compatibility mode and validate extension semantics against the Windows target ABI."
+		} else {
+			item.Strategy = model.StrategySourceRewrite
+			item.Provider = "portable-language-constructs"
+			item.Reason = "Isolate Microsoft-specific language and linker extensions behind portability macros or standard constructs."
+		}
+	case req.ID == "compiler.gnu-extensions":
+		item.Strategy = model.StrategyNativeRebuild
+		item.Provider = "clang-gnu-extensions"
+		item.Reason = "Clang supports the detected GNU extensions, but warning-clean target compilation must verify their ABI implications."
+	case req.ID == "abi.packed-layout":
+		item.Strategy = model.StrategyReview
+		item.Provider = "abi-layout-verifier"
+		item.Reason = "Packed layouts cross compiler and architecture ABI boundaries; verify size, alignment, endianness and serialization assumptions explicitly."
+	case req.ID == "filesystem.win32":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "win32-filesystem"
+			item.Reason = "The Windows target provides the detected filesystem API."
+		} else {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "portable-filesystem-contract"
+			item.Reason = "Map path encoding, sharing, metadata and directory traversal semantics to the target filesystem API."
+		}
+	case req.ID == "filesystem.posix":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "windows-filesystem-contract"
+			item.Reason = "Map POSIX path, directory and metadata operations to Windows while preserving error and encoding semantics."
+		} else {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "posix-filesystem"
+			item.Reason = "The target provides POSIX-style filesystem primitives."
+		}
+	case req.ID == "process.win32":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "win32-process"
+			item.Reason = "The Windows target provides the detected process API."
+		} else {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "posix-process-contract"
+			item.Reason = "Recover command-line, environment, handle inheritance and lifecycle semantics before mapping to POSIX process creation."
+		}
+	case req.ID == "process.posix":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyCompatibilityRuntime
+			item.Provider = "portable-process-runtime"
+			item.Reason = "Fork/exec semantics need a constrained Windows process runtime or an application-level process abstraction."
+		} else {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "posix-process"
+			item.Reason = "The target provides POSIX process primitives."
+		}
+	case req.ID == "memory.win32-virtual":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "win32-virtual-memory"
+			item.Reason = "The Windows target provides the detected virtual-memory API."
+		} else {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "posix-mmap"
+			item.Reason = "Map reserve, commit, protection and mapped-file semantics to POSIX virtual-memory primitives."
+		}
+	case req.ID == "memory.posix-mmap":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "win32-virtual-memory"
+			item.Reason = "Map mmap protection, sharing and file-offset semantics to Windows virtual-memory APIs."
+		} else {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "posix-mmap"
+			item.Reason = "The target provides POSIX memory mapping."
+		}
+	case req.ID == "os.windows.registry":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "windows-registry"
+			item.Reason = "The Windows target provides Registry APIs."
+		} else {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "configuration-store-contract"
+			item.Reason = "Recover key/value persistence semantics and map them to a declared target configuration store."
+		}
+	case req.ID == "os.windows.com":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "windows-com"
+			item.Reason = "The Windows target provides COM activation and apartment services."
+		} else {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "service-interface-contract"
+			item.Reason = "Extract the consumed COM interfaces and generate a target service/provider boundary instead of emulating COM globally."
+		}
+	case req.ID == "time.win32-qpc":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "query-performance-counter"
+			item.Reason = "The Windows target provides QueryPerformanceCounter."
+		} else {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "monotonic-clock"
+			item.Reason = "Map frequency-scaled counter semantics to the target monotonic clock without changing duration precision."
+		}
+	case req.ID == "time.posix-clock":
+		if targetProfile.OS == "windows" {
+			item.Strategy = model.StrategyGeneratedAdapter
+			item.Provider = "query-performance-counter"
+			item.Reason = "Map POSIX clock IDs and monotonicity semantics to Windows timing primitives."
+		} else {
+			item.Strategy = model.StrategyNativeRebuild
+			item.Provider = "posix-clock"
+			item.Reason = "The target provides POSIX clock APIs."
+		}
 	case req.ID == "dependency.binary-only":
 		item.Strategy = model.StrategyUnresolved
 		item.Provider = "license-and-architecture-resolver"

@@ -47,18 +47,21 @@ type CapabilityRequirement struct {
 }
 
 type AnalysisReport struct {
-	SchemaVersion string                  `json:"schema_version"`
-	GeneratedAt   time.Time               `json:"generated_at"`
-	ProjectName   string                  `json:"project_name"`
-	ProjectPath   string                  `json:"project_path"`
-	BuildSystems  []BuildSystem           `json:"build_systems"`
-	Languages     map[string]int          `json:"languages"`
-	FileCount     int                     `json:"file_count"`
-	TextFileCount int                     `json:"text_file_count"`
-	BinaryCount   int                     `json:"binary_count"`
-	Requirements  []CapabilityRequirement `json:"requirements"`
-	Graph         ProjectGraph            `json:"graph"`
-	Warnings      []string                `json:"warnings,omitempty"`
+	SchemaVersion  string                  `json:"schema_version"`
+	GeneratedAt    time.Time               `json:"generated_at"`
+	ProjectName    string                  `json:"project_name"`
+	ProjectPath    string                  `json:"project_path"`
+	ProjectDigest  string                  `json:"project_digest,omitempty"`
+	ProjectEntries int                     `json:"project_entries,omitempty"`
+	ProjectBytes   int64                   `json:"project_bytes,omitempty"`
+	BuildSystems   []BuildSystem           `json:"build_systems"`
+	Languages      map[string]int          `json:"languages"`
+	FileCount      int                     `json:"file_count"`
+	TextFileCount  int                     `json:"text_file_count"`
+	BinaryCount    int                     `json:"binary_count"`
+	Requirements   []CapabilityRequirement `json:"requirements"`
+	Graph          ProjectGraph            `json:"graph"`
+	Warnings       []string                `json:"warnings,omitempty"`
 }
 
 type TargetProfile struct {
@@ -127,6 +130,7 @@ const (
 type ArtifactInfo struct {
 	SourcePath     string   `json:"source_path"`
 	PackagedPath   string   `json:"packaged_path"`
+	PackagePath    string   `json:"package_path,omitempty"`
 	Format         string   `json:"format"`
 	Architecture   string   `json:"architecture"`
 	Kind           string   `json:"kind"`
@@ -195,19 +199,30 @@ type ToolchainProvenance struct {
 }
 
 type BuildManifest struct {
-	SchemaVersion string               `json:"schema_version"`
-	GeneratedAt   time.Time            `json:"generated_at"`
-	MiruriVersion string               `json:"miruri_version"`
-	ProjectName   string               `json:"project_name"`
-	Target        TargetProfile        `json:"target"`
-	BuildSystem   BuildSystem          `json:"build_system"`
-	Sysroot       *SysrootProvenance   `json:"sysroot,omitempty"`
-	Toolchain     *ToolchainProvenance `json:"toolchain,omitempty"`
-	Assurance     ArtifactAssurance    `json:"assurance"`
-	Artifacts     []ArtifactInfo       `json:"artifacts"`
-	CodexRepairs  []CodexRepairAttempt `json:"codex_repairs,omitempty"`
-	Warnings      []string             `json:"warnings,omitempty"`
-	BuildLog      string               `json:"build_log"`
-	AnalysisFile  string               `json:"analysis_file"`
-	PlanFile      string               `json:"plan_file"`
+	SchemaVersion     string               `json:"schema_version"`
+	GeneratedAt       time.Time            `json:"generated_at"`
+	StartedAt         time.Time            `json:"started_at,omitempty"`
+	DurationMillis    int64                `json:"duration_ms,omitempty"`
+	MiruriVersion     string               `json:"miruri_version"`
+	BuildID           string               `json:"build_id,omitempty"`
+	BuildStatus       string               `json:"build_status,omitempty"`
+	ProjectName       string               `json:"project_name"`
+	ProjectDigest     string               `json:"project_digest,omitempty"`
+	RequestDigest     string               `json:"request_digest,omitempty"`
+	Reused            bool                 `json:"reused,omitempty"`
+	Target            TargetProfile        `json:"target"`
+	BuildSystem       BuildSystem          `json:"build_system"`
+	Sysroot           *SysrootProvenance   `json:"sysroot,omitempty"`
+	Toolchain         *ToolchainProvenance `json:"toolchain,omitempty"`
+	Assurance         ArtifactAssurance    `json:"assurance"`
+	Artifacts         []ArtifactInfo       `json:"artifacts"`
+	CodexRepairs      []CodexRepairAttempt `json:"codex_repairs,omitempty"`
+	Warnings          []string             `json:"warnings,omitempty"`
+	BuildLog          string               `json:"build_log"`
+	AnalysisFile      string               `json:"analysis_file"`
+	PlanFile          string               `json:"plan_file"`
+	LicenseReportFile string               `json:"license_report_file,omitempty"`
+	SBOMFile          string               `json:"sbom_file,omitempty"`
+	IntegrityFile     string               `json:"integrity_file,omitempty"`
+	PortedSourceDir   string               `json:"ported_source_dir,omitempty"`
 }

@@ -15,6 +15,9 @@ Miruriは単なるcross compiler wrapperではありません。
 5. transformationは元repositoryではなくisolated overlayで行う
 6. build成功とruntime動作保証を混同しない
 7. source licenseを勝手に変更しない
+8. source identityとbuild request identityを分離して記録する
+9. artifact setはstaging上でstrict verificationを通過してから公開する
+10. failed buildで以前の正常artifact setを破壊しない
 
 ## 3. Project Graph
 
@@ -194,6 +197,9 @@ GUI、graphics、audioなどの知識をcoreへ直書きしません。
 v0.1のdomain pack:
 
 - core-c
+- build-portability
+- compute
+- platform
 - gui
 - graphics
 - shader
@@ -201,6 +207,8 @@ v0.1のdomain pack:
 - input
 - plugin
 - assets
+
+`build-portability`は`-march=native`、architecture固定flag、target executableを使うconfiguration probeを検出します。`compute`はCUDA、OpenCL、OpenMP、SVE、RISC-V Vector、WASM SIMDを扱います。`platform`はcompiler extension、packed ABI、Win32/POSIX filesystem・process・virtual memory・clock、Registry、COMなどをCapabilityへ正規化します。
 
 現在はembedded JSON detection rulesですが、将来は次のinterfaceへ発展させます。
 
@@ -299,6 +307,38 @@ v0.1が到達するのは`statically-validated`までです。
 
 実行していないartifactを`behavior-validated`とは表示しません。
 
+### Verifiable artifact-set lifecycle
+
+```text
+project tree
+    │ deterministic content fingerprint
+    ▼
+project_digest
+    │ + target / build system / sysroot / Codex policy / Miruri version
+    ▼
+request_digest ── short display key ──► build_id
+    │
+    ▼
+.miruri-staging/<target>-<build-id>-<nonce>/
+    ├─ analysis / plan / build log
+    ├─ license evidence / SPDX 2.3 SBOM
+    ├─ artifact inspection metadata
+    ├─ manifest
+    └─ checksums.sha256
+    │ strict non-executing verification
+    ▼
+atomic rename
+    ▼
+dist/<target>/
+```
+
+fingerprintはmtime、owner、absolute pathを含めず、relative path、content、symlink target、execute bitを含めます。entry headerとpayloadはlength-prefixed binary framingでdomain separationし、payloadが次entryのheader境界を曖昧化できないようにします。project root、output、report pathは既存ancestorのsymlinkを解決してcanonicalizeし、利用者が明示した生成pathをanalysis、fingerprint、isolated copy、license scanから一貫して除外します。`--reuse`はproject/request digest一致だけでなく、既存setのstrict verification成功を必須とします。
+
+strict verifierはmetadata相互参照、license project identity、SPDX document/package/file relationship、project/artifact checksum、sysroot lock、path boundary、artifact hash・size・format・architecture・kind・dependency metadata、checksum coverageを検査します。target executableは実行しません。
+SPDX packageはsource全fileを列挙済みとは主張せず`filesAnalyzed=false`とし、document `DESCRIBES`とpackage `CONTAINS`で既知のartifact・license evidenceだけを結びます。
+
+publication前に自己検証するため、不完全setが正常な`dist/<target>`として見える時間を作りません。failed buildはstaging側へdiagnostic evidenceを残し、以前の正常setを維持します。
+
 ## 12. Codexの位置
 
 Codexはcompilerの代わりではなく、制約付きPorting Agentです。
@@ -324,7 +364,22 @@ compiler / linker / inspector verdict
 
 Miruriは`codex --ask-for-approval never exec --sandbox workspace-write`を利用し、dangerous bypassを使いません。repair前にCodex CLI option compatibilityを検査し、repair後にはsymlink境界を再検査します。
 
-## 13. Worker将来像
+## 13. Multi-target matrixと比較
+
+`miruri matrix`はProject Graphとsource fingerprintを一度だけ生成し、targetごとのplannerまたはbuilderへimmutableなanalysis snapshotを渡します。matrix output/reportの除外pathもbuilderへ伝播し、analysis snapshotとisolated overlay・license evidenceのsource boundaryを一致させます。bounded worker poolを使い、result arrayはcompletion順ではなくrequestされたtarget順へ戻します。
+
+```text
+single analysis snapshot
+     ├─ linux-x86_64 worker ──┐
+     ├─ linux-arm64 worker  ──┼─► matrix.json
+     └─ linux-riscv64 worker ─┘
+```
+
+progress streamはtarget prefixを付けてline単位で同期し、並列logの混線を抑えます。fail-fastでは最初のfailed/blocked result後にcontextをcancelし、未開始targetを`canceled`として明示します。
+
+`miruri compare`は二つのartifact setを、build identity、target、sysroot、toolchain、Capability、strategy、license evidence、artifact path/hash/format/architecture/dependencyのcategoryへ分解して比較します。artifact binaryが同じでもtoolchainやstrategyが違えばset全体はequivalentではありません。
+
+## 14. Worker将来像
 
 ```text
 M1 Mac host

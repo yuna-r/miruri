@@ -1,0 +1,111 @@
+{
+  "id": "platform",
+  "version": "0.2.0",
+  "description": "Compiler, ABI, process, filesystem and operating-system portability islands",
+  "rules": [
+    {
+      "id": "msvc-extensions",
+      "description": "Microsoft C/C++ language or linker extensions",
+      "domain": "compiler",
+      "capability": "compiler.msvc-extensions",
+      "hard": false,
+      "patterns": ["__declspec(", "#pragma comment(", "__try", "__except("]
+    },
+    {
+      "id": "gnu-extensions",
+      "description": "GNU C/C++ language extensions",
+      "domain": "compiler",
+      "capability": "compiler.gnu-extensions",
+      "hard": false,
+      "patterns": ["__attribute__((", "typeof(", "__builtin_expect("]
+    },
+    {
+      "id": "packed-layout",
+      "description": "Explicit packed ABI layout requires target-by-target verification",
+      "domain": "abi",
+      "capability": "abi.packed-layout",
+      "hard": true,
+      "patterns": ["#pragma pack", "__attribute__((packed", "__declspec(align("]
+    },
+    {
+      "id": "win32-filesystem",
+      "description": "Win32 filesystem API",
+      "domain": "filesystem",
+      "capability": "filesystem.win32",
+      "hard": false,
+      "patterns": ["CreateFileW(", "FindFirstFileW(", "GetFullPathNameW("]
+    },
+    {
+      "id": "posix-filesystem",
+      "description": "POSIX filesystem and directory API",
+      "domain": "filesystem",
+      "capability": "filesystem.posix",
+      "hard": false,
+      "patterns": ["<dirent.h>", "opendir(", "realpath("]
+    },
+    {
+      "id": "win32-process",
+      "description": "Win32 process creation and shell integration",
+      "domain": "process",
+      "capability": "process.win32",
+      "hard": true,
+      "patterns": ["CreateProcessW(", "ShellExecuteW(", "GetExitCodeProcess("]
+    },
+    {
+      "id": "posix-process",
+      "description": "POSIX process creation",
+      "domain": "process",
+      "capability": "process.posix",
+      "hard": true,
+      "patterns": ["fork(", "execve(", "posix_spawn("]
+    },
+    {
+      "id": "win32-virtual-memory",
+      "description": "Win32 virtual-memory API",
+      "domain": "memory",
+      "capability": "memory.win32-virtual",
+      "hard": false,
+      "patterns": ["VirtualAlloc(", "VirtualProtect(", "CreateFileMappingW("]
+    },
+    {
+      "id": "posix-mmap",
+      "description": "POSIX memory mapping",
+      "domain": "memory",
+      "capability": "memory.posix-mmap",
+      "hard": false,
+      "patterns": ["<sys/mman.h>", "mmap(", "mprotect("]
+    },
+    {
+      "id": "windows-registry",
+      "description": "Windows Registry persistence or configuration",
+      "domain": "os-service",
+      "capability": "os.windows.registry",
+      "hard": true,
+      "patterns": ["RegOpenKeyExW(", "RegQueryValueExW(", "RegSetValueExW("]
+    },
+    {
+      "id": "windows-com",
+      "description": "Windows COM activation or apartment lifecycle",
+      "domain": "os-service",
+      "capability": "os.windows.com",
+      "hard": true,
+      "patterns": ["CoInitializeEx(", "CoCreateInstance(", "IUnknown"]
+    },
+    {
+      "id": "win32-high-resolution-time",
+      "description": "Win32 high-resolution clock",
+      "domain": "time",
+      "capability": "time.win32-qpc",
+      "hard": false,
+      "patterns": ["QueryPerformanceCounter(", "QueryPerformanceFrequency("]
+    },
+    {
+      "id": "posix-clock",
+      "description": "POSIX monotonic or realtime clock",
+      "domain": "time",
+      "capability": "time.posix-clock",
+      "hard": false,
+      "patterns": ["clock_gettime(", "CLOCK_MONOTONIC"]
+    }
+  ]
+}

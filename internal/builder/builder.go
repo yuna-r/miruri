@@ -16,41 +16,53 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yuna-r/miruri/internal/analyze"
+	"github.com/yuna-r/miruri/internal/artifactset"
 	"github.com/yuna-r/miruri/internal/codex"
+	"github.com/yuna-r/miruri/internal/fingerprint"
 	"github.com/yuna-r/miruri/internal/fsutil"
 	"github.com/yuna-r/miruri/internal/inspect"
+	"github.com/yuna-r/miruri/internal/licenses"
 	"github.com/yuna-r/miruri/internal/model"
 	"github.com/yuna-r/miruri/internal/planner"
 	"github.com/yuna-r/miruri/internal/repairworkspace"
+	"github.com/yuna-r/miruri/internal/sbom"
 	"github.com/yuna-r/miruri/internal/sysroot"
 	"github.com/yuna-r/miruri/internal/target"
+	"github.com/yuna-r/miruri/internal/verify"
 )
 
 type Config struct {
-	ProjectDir     string
-	Target         model.TargetProfile
-	Sysroot        string
-	CacheDir       string
-	Offline        bool
-	RefreshSysroot bool
-	SysrootTimeout time.Duration
-	OutDir         string
-	Generator      string
-	UseCodex       bool
-	CodexMode      codex.TaskMode
-	MaxRepairs     int
-	CodexBinary    string
-	CodexModel     string
-	CodexProfile   string
-	CodexAuth      codex.AuthMode
-	CodexTimeout   time.Duration
-	KeepWork       bool
-	DryRun         bool
-	Version        string
-	Timeout        time.Duration
-	Progress       io.Writer
+	ProjectDir              string
+	Target                  model.TargetProfile
+	Sysroot                 string
+	CacheDir                string
+	Offline                 bool
+	RefreshSysroot          bool
+	SysrootTimeout          time.Duration
+	OutDir                  string
+	Generator               string
+	UseCodex                bool
+	CodexMode               codex.TaskMode
+	MaxRepairs              int
+	CodexBinary             string
+	CodexModel              string
+	CodexProfile            string
+	CodexAuth               codex.AuthMode
+	CodexTimeout            time.Duration
+	CodexInstructions       string
+	CodexInstructionsInline string
+	CodexInstructionsFile   string
+	KeepWork                bool
+	DryRun                  bool
+	Version                 string
+	Timeout                 time.Duration
+	Progress                io.Writer
+	Analysis                *model.AnalysisReport
+	ExcludePaths            []string
+	Reuse                   bool
 }
 
 type Result struct {
@@ -58,29 +70,37 @@ type Result struct {
 	ManifestPath string
 	PackageDir   string
 	WorkDir      string
+	Reused       bool
 }
 
 type buildContext struct {
-	config          Config
-	analysis        model.AnalysisReport
-	plan            model.PortingPlan
-	buildSystem     model.BuildSystem
-	projectAbs      string
-	workDir         string
-	sourceDir       string
-	buildDir        string
-	packageDir      string
-	cacheDir        string
-	logPath         string
-	logBuffer       bytes.Buffer
-	codexRepairs    []model.CodexRepairAttempt
-	repairRepo      *repairworkspace.Repository
-	sysrootInfo     sysroot.Resolution
-	sysrootLockPath string
-	toolchain       llvmToolchain
+	config            Config
+	analysis          model.AnalysisReport
+	plan              model.PortingPlan
+	buildSystem       model.BuildSystem
+	projectAbs        string
+	workDir           string
+	sourceDir         string
+	buildDir          string
+	packageDir        string
+	finalPackageDir   string
+	cacheDir          string
+	logPath           string
+	logBuffer         bytes.Buffer
+	codexRepairs      []model.CodexRepairAttempt
+	repairRepo        *repairworkspace.Repository
+	sysrootInfo       sysroot.Resolution
+	sysrootLockPath   string
+	toolchain         llvmToolchain
+	startedAt         time.Time
+	requestDigest     string
+	buildID           string
+	projectExclusions []string
+	fidelityBaseline  portFidelityBaseline
 }
 
 func Build(ctx context.Context, config Config) (Result, error) {
+	startedAt := time.Now().UTC()
 	if config.MaxRepairs < 0 {
 		return Result{}, fmt.Errorf("max repairs must be non-negative")
 	}
@@ -98,13 +118,52 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	if config.SysrootTimeout <= 0 {
 		config.SysrootTimeout = 45 * time.Minute
 	}
-	projectAbs, err := filepath.Abs(config.ProjectDir)
+	projectAbs, err := fsutil.CanonicalPath(config.ProjectDir)
 	if err != nil {
 		return Result{}, err
 	}
-	analysisReport, err := analyze.Project(projectAbs, analyze.Options{})
+	outDir := config.OutDir
+	if outDir == "" {
+		outDir = filepath.Join(projectAbs, "dist")
+	}
+	outDir, err = fsutil.CanonicalPath(outDir)
 	if err != nil {
 		return Result{}, err
+	}
+	if projectAbs == outDir {
+		return Result{}, fmt.Errorf("output directory must not be the project root: %s", outDir)
+	}
+	projectExclusions := append([]string(nil), config.ExcludePaths...)
+	projectExclusions = append(projectExclusions, outDir)
+	fidelityBaseline, err := capturePortFidelityBaseline(projectAbs, projectExclusions)
+	if err != nil {
+		return Result{}, fmt.Errorf("capture original port-fidelity baseline: %w", err)
+	}
+
+	var analysisReport model.AnalysisReport
+	if config.Analysis != nil {
+		analysisReport = *config.Analysis
+		if analysisReport.ProjectPath != "" {
+			analysisPath, pathErr := fsutil.CanonicalPath(analysisReport.ProjectPath)
+			if pathErr != nil || analysisPath != projectAbs {
+				return Result{}, fmt.Errorf("precomputed analysis belongs to %q, not %q", analysisReport.ProjectPath, projectAbs)
+			}
+		}
+	} else {
+		analysisReport, err = analyze.Project(projectAbs, analyze.Options{ExcludePaths: projectExclusions})
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	if analysisReport.ProjectDigest == "" {
+		projectFingerprint, fingerprintErr := fingerprint.Project(projectAbs, fingerprint.Options{ExcludePaths: projectExclusions})
+		if fingerprintErr != nil {
+			return Result{}, fingerprintErr
+		}
+		analysisReport.ProjectDigest = projectFingerprint.Digest
+		analysisReport.ProjectEntries = projectFingerprint.FileCount
+		analysisReport.ProjectBytes = projectFingerprint.ByteCount
+		analysisReport.Warnings = append(analysisReport.Warnings, projectFingerprint.Warnings...)
 	}
 	var sysrootLog bytes.Buffer
 	var sysrootProgress io.Writer = &sysrootLog
@@ -125,23 +184,47 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	})
 	buildSystem, err := chooseBuildSystem(analysisReport.BuildSystems)
 	if err != nil {
-		return Result{}, err
+		bootstrapPort := config.UseCodex && config.MaxRepairs > 0 && (config.CodexMode == codex.TaskPort || config.CodexMode == codex.TaskAuto)
+		if !bootstrapPort {
+			return Result{}, err
+		}
+		buildSystem = model.BuildSystemUnknown
+		if config.Progress != nil {
+			fmt.Fprintf(config.Progress, "Miruri port bootstrap: no supported native build system detected; Codex will create or revise a portable build system.\n")
+		}
 	}
-
-	outDir := config.OutDir
-	if outDir == "" {
-		outDir = filepath.Join(projectAbs, "dist")
+	if strings.TrimSpace(config.CodexInstructionsFile) != "" && config.Reuse {
+		progressf(config.Progress, "Miruri reuse: disabled because --instructions-file is live-reloaded between Codex attempts.\n")
+		config.Reuse = false
 	}
-	outDir, err = filepath.Abs(outDir)
+	requestDigest, err := buildRequestDigest(config, analysisReport, buildSystem, sysrootInfo)
 	if err != nil {
 		return Result{}, err
 	}
-	packageDir := filepath.Join(outDir, config.Target.ID)
-	if err := os.RemoveAll(packageDir); err != nil {
-		return Result{}, fmt.Errorf("clean package directory: %w", err)
+	buildID := fingerprint.Short(requestDigest, 20)
+
+	finalPackageDir := filepath.Join(outDir, config.Target.ID)
+	if config.Reuse {
+		if reused, ok := reuseArtifactSet(finalPackageDir, analysisReport.ProjectDigest, requestDigest, config.Progress); ok {
+			reused.Reused = true
+			return Result{
+				Manifest:     reused,
+				ManifestPath: filepath.Join(finalPackageDir, artifactset.ManifestName),
+				PackageDir:   finalPackageDir,
+				Reused:       true,
+			}, nil
+		}
 	}
-	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return Result{}, err
+	}
+	stagingRoot := filepath.Join(outDir, ".miruri-staging")
+	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create artifact staging root: %w", err)
+	}
+	packageDir, err := os.MkdirTemp(stagingRoot, config.Target.ID+"-"+buildID+"-")
+	if err != nil {
+		return Result{}, fmt.Errorf("create artifact staging directory: %w", err)
 	}
 
 	cacheRoot := sysrootManager.CacheDir()
@@ -165,19 +248,25 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	}
 
 	bc := &buildContext{
-		config:          config,
-		analysis:        analysisReport,
-		plan:            portingPlan,
-		buildSystem:     buildSystem,
-		projectAbs:      projectAbs,
-		workDir:         workDir,
-		sourceDir:       sourceDir,
-		buildDir:        buildDir,
-		packageDir:      packageDir,
-		cacheDir:        cacheRoot,
-		logPath:         filepath.Join(packageDir, "build.log"),
-		sysrootInfo:     sysrootInfo,
-		sysrootLockPath: sysrootLockPath,
+		config:            config,
+		analysis:          analysisReport,
+		plan:              portingPlan,
+		buildSystem:       buildSystem,
+		projectAbs:        projectAbs,
+		workDir:           workDir,
+		sourceDir:         sourceDir,
+		buildDir:          buildDir,
+		packageDir:        packageDir,
+		finalPackageDir:   finalPackageDir,
+		cacheDir:          cacheRoot,
+		logPath:           filepath.Join(packageDir, "build.log"),
+		sysrootInfo:       sysrootInfo,
+		sysrootLockPath:   sysrootLockPath,
+		startedAt:         startedAt,
+		requestDigest:     requestDigest,
+		buildID:           buildID,
+		projectExclusions: projectExclusions,
+		fidelityBaseline:  fidelityBaseline,
 	}
 	_, _ = bc.logBuffer.Write(sysrootLog.Bytes())
 	if sysrootInfo.Mode != "" {
@@ -201,17 +290,25 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	}
 
 	if config.DryRun {
+		bc.logf("Miruri dry run: analysis and plan completed; build tools were not invoked.\n")
+		if err := os.WriteFile(bc.logPath, bc.logBuffer.Bytes(), 0o644); err != nil {
+			return Result{}, err
+		}
 		manifest := baseManifest(bc, analysisPath, planPath)
 		manifest.Assurance = model.AssuranceGenerated
 		manifest.Warnings = append(manifest.Warnings, "dry run: no compiler or linker was invoked")
 		if sysrootInfo.Mode == "managed-pending" {
 			manifest.Warnings = append(manifest.Warnings, "dry run: the managed sysroot provider was selected but no registry data was downloaded")
 		}
-		manifestPath := filepath.Join(packageDir, "manifest.json")
-		if err := fsutil.WriteJSON(manifestPath, manifest); err != nil {
+		manifest, _, err := bc.finalizeManifest(manifest, "dry-run")
+		if err != nil {
 			return Result{}, err
 		}
-		return Result{Manifest: manifest, ManifestPath: manifestPath, PackageDir: packageDir, WorkDir: workDir}, nil
+		if err := publishArtifactSet(packageDir, finalPackageDir); err != nil {
+			return Result{}, err
+		}
+		manifestPath := filepath.Join(finalPackageDir, artifactset.ManifestName)
+		return Result{Manifest: manifest, ManifestPath: manifestPath, PackageDir: finalPackageDir, WorkDir: workDir}, nil
 	}
 
 	toolchain, err := discoverLLVMToolchain(config.Target, config.Sysroot)
@@ -222,7 +319,7 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	if err := validateEnvironment(config.Target, config.Sysroot, toolchain); err != nil {
 		return Result{}, err
 	}
-	if err := fsutil.CopyTree(projectAbs, sourceDir); err != nil {
+	if err := fsutil.CopyTreeWithOptions(projectAbs, sourceDir, fsutil.CopyTreeOptions{ExcludePaths: projectExclusions}); err != nil {
 		return Result{}, fmt.Errorf("create isolated source overlay: %w", err)
 	}
 	if config.UseCodex && config.MaxRepairs > 0 {
@@ -244,15 +341,27 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		bc.logf("Codex isolated Git workspace prepared\n")
 	}
 
+	var codexSession *codex.AppServerSession
+	var codexAppServerTried bool
+
 	var buildErr error
+	continuationDirective := ""
+	lastInstructionsDigest := digestText(config.CodexInstructions)
 	for attempt := 0; attempt <= config.MaxRepairs; attempt++ {
+		linkedBuildBeforeCodex := false
 		if attempt > 0 {
 			bc.logf("\n=== rebuild after Codex repair attempt %d ===\n", attempt)
 		}
 		attemptLogStart := bc.logBuffer.Len()
 		buildErr = bc.runBuild(ctx)
 		if buildErr == nil {
-			break
+			linkedBuildBeforeCodex = true
+			if fidelityErr := bc.validatePortFidelityAfterBuild(); fidelityErr != nil {
+				bc.logf("%v\n", fidelityErr)
+				buildErr = fidelityErr
+			} else {
+				break
+			}
 		}
 		latestBuildLog := bc.logBuffer.String()[attemptLogStart:]
 		if !config.UseCodex || attempt >= config.MaxRepairs {
@@ -274,20 +383,51 @@ func Build(ctx context.Context, config Config) (Result, error) {
 			break
 		}
 		attemptDir := filepath.Join(packageDir, "codex", fmt.Sprintf("attempt-%02d", attempt+1))
+		attemptInstructions, instructionsErr := loadCodexInstructionsForAttempt(config)
+		if instructionsErr != nil {
+			buildErr = fmt.Errorf("%w; reload Codex instructions: %v", buildErr, instructionsErr)
+			break
+		}
+		attemptInstructionsDigest := digestText(attemptInstructions)
+		if strings.TrimSpace(config.CodexInstructionsFile) != "" && attemptInstructionsDigest != lastInstructionsDigest {
+			bc.logf("Miruri Codex instructions: reloaded %s for attempt %d (%s).\n", config.CodexInstructionsFile, attempt+1, attemptInstructionsDigest)
+		}
+		lastInstructionsDigest = attemptInstructionsDigest
+		if codexSession == nil && !codexAppServerTried && (config.CodexMode == codex.TaskPort || config.CodexMode == codex.TaskAuto) {
+			codexAppServerTried = true
+			session, sessionErr := codex.StartAppServerSession(ctx, codex.AppServerSessionConfig{
+				Binary:    config.CodexBinary,
+				Workspace: sourceDir,
+				Model:     config.CodexModel,
+				Profile:   config.CodexProfile,
+				AuthMode:  config.CodexAuth,
+			})
+			if sessionErr != nil {
+				bc.logf("Codex persistent app-server unavailable; falling back to per-attempt codex exec: %v\n", sessionErr)
+			} else {
+				codexSession = session
+				defer codexSession.Close()
+				bc.logf("Codex persistent app-server ready; thread %s will be reused across port attempts.\n", codexSession.ThreadID())
+			}
+		}
 		result, repairErr := codex.Repair(ctx, codex.RepairRequest{
-			Mode:          config.CodexMode,
-			Binary:        config.CodexBinary,
-			Workspace:     sourceDir,
-			OutputDir:     attemptDir,
-			Target:        config.Target,
-			BuildSystem:   buildSystem,
-			BuildLog:      latestBuildLog,
-			Attempt:       attempt + 1,
-			Model:         config.CodexModel,
-			Profile:       config.CodexProfile,
-			AuthMode:      config.CodexAuth,
-			Timeout:       config.CodexTimeout,
-			MiruriVersion: config.Version,
+			Session:               codexSession,
+			Mode:                  config.CodexMode,
+			Binary:                config.CodexBinary,
+			Workspace:             sourceDir,
+			OutputDir:             attemptDir,
+			Target:                config.Target,
+			BuildSystem:           buildSystem,
+			BuildLog:              latestBuildLog,
+			Attempt:               attempt + 1,
+			Model:                 config.CodexModel,
+			Profile:               config.CodexProfile,
+			AuthMode:              config.CodexAuth,
+			Timeout:               config.CodexTimeout,
+			MiruriVersion:         config.Version,
+			PreservationBaseline:  bc.fidelityBaseline.promptSummary(80),
+			ContinuationDirective: continuationDirective,
+			CustomInstructions:    attemptInstructions,
 			Progress: func(event codex.ProgressEvent) {
 				bc.logf("[codex] %s\n", event.Message)
 			},
@@ -295,8 +435,10 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		patchPath := filepath.Join(attemptDir, "repair.patch")
 		resultPath := filepath.Join(attemptDir, "result.json")
 		var changedFiles []string
+		continuationStatus := portContinuationStatus(config.CodexMode, result.Response.Status)
 		if repairErr == nil {
-			if result.Response.Status != "repaired" && result.Response.Status != "ported" {
+			acceptedStatus := result.Response.Status == "repaired" || result.Response.Status == "ported" || continuationStatus
+			if !acceptedStatus {
 				repairErr = fmt.Errorf("Codex returned status %q: %s", result.Response.Status, result.Response.Summary)
 			} else if violations := codex.ArtifactOnlyViolations(result.Events.Commands); len(violations) > 0 {
 				repairErr = fmt.Errorf("Codex violated artifact-only policy: %s", strings.Join(violations, "; "))
@@ -316,7 +458,14 @@ func Build(ctx context.Context, config Config) (Result, error) {
 						})
 					}
 					if len(changes.Files) == 0 {
-						repairErr = fmt.Errorf("Codex reported a repair but made no accepted source or build-script changes")
+						completionReassessment := linkedBuildBeforeCodex &&
+							(config.CodexMode == codex.TaskPort || config.CodexMode == codex.TaskAuto) &&
+							(result.Response.Status == "ported" || result.Response.Status == "repaired")
+						if !continuationStatus && !completionReassessment {
+							repairErr = fmt.Errorf("Codex reported a repair but made no accepted source or build-script changes")
+						} else if completionReassessment {
+							bc.logf("Miruri port completion: accepting zero-change status %q as a fidelity reassessment because the immediately preceding Miruri build linked successfully.\n", result.Response.Status)
+						}
 					} else {
 						changedFiles = changes.Files
 						result.ChangedFiles = append([]string(nil), changedFiles...)
@@ -402,6 +551,40 @@ func Build(ctx context.Context, config Config) (Result, error) {
 			buildErr = fmt.Errorf("%w; %v", buildErr, repairErr)
 			break
 		}
+
+		if continuationStatus {
+			continuationDirective = portContinuationDirective(attempt+1, result.Response, changedFiles)
+			if len(changedFiles) == 0 {
+				bc.logf("Miruri port continuation: Codex status %q is non-terminal while retry budget remains; no source changes were made, so the next attempt will receive an explicit implementation directive.\n", result.Response.Status)
+			} else {
+				bc.logf("Miruri port continuation: accepted %d incremental source/build change(s) with status %q; rebuilding before the next implementation attempt.\n", len(changedFiles), result.Response.Status)
+			}
+		} else {
+			continuationDirective = ""
+		}
+
+		// A full-platform port may replace an unsupported/native-only project file
+		// (for example Visual Studio .sln/.vcxproj) with a portable CMake, Meson,
+		// Autotools, or Make build. Re-detect after every accepted Codex change so
+		// the next attempt actually uses the newly generated build system.
+		repairedAnalysis, analyzeErr := analyze.Project(sourceDir, analyze.Options{})
+		if analyzeErr != nil {
+			buildErr = fmt.Errorf("re-analyze repaired workspace: %w", analyzeErr)
+			break
+		}
+		repairedBuildSystem, detectErr := chooseBuildSystem(repairedAnalysis.BuildSystems)
+		if detectErr != nil {
+			if bc.buildSystem == model.BuildSystemUnknown {
+				bc.logf("Miruri port bootstrap: Codex has not created a supported portable build system yet; another port attempt is required.\n")
+			} else {
+				bc.logf("Miruri note: repaired workspace build-system re-detection failed; keeping %s: %v\n", bc.buildSystem, detectErr)
+			}
+		} else if repairedBuildSystem != bc.buildSystem {
+			bc.logf("Miruri build system: %s -> %s after Codex port\n", bc.buildSystem, repairedBuildSystem)
+			bc.buildSystem = repairedBuildSystem
+			buildSystem = repairedBuildSystem
+		}
+
 		if err := bc.resetAfterRepair(ctx); err != nil {
 			buildErr = fmt.Errorf("reset build state after repair: %w", err)
 			break
@@ -413,11 +596,19 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		return Result{}, err
 	}
 	if buildErr != nil {
+		portedSourceDir, snapshotErr := bc.preservePortedSource()
+		_ = os.WriteFile(bc.logPath, bc.logBuffer.Bytes(), 0o644)
 		manifest := baseManifest(bc, analysisPath, planPath)
+		manifest.PortedSourceDir = portedSourceDir
+		if snapshotErr != nil {
+			manifest.Warnings = append(manifest.Warnings, "preserve final Codex source snapshot: "+snapshotErr.Error())
+		}
 		manifest.Assurance = model.AssuranceGenerated
 		manifest.Warnings = append(manifest.Warnings, "build failed: "+buildErr.Error())
-		manifestPath := filepath.Join(packageDir, "manifest.json")
-		_ = fsutil.WriteJSON(manifestPath, manifest)
+		manifest, manifestPath, finalizeErr := bc.finalizeManifest(manifest, "failed")
+		if finalizeErr != nil {
+			buildErr = fmt.Errorf("%w; finalize failed artifact set: %v", buildErr, finalizeErr)
+		}
 		return Result{Manifest: manifest, ManifestPath: manifestPath, PackageDir: packageDir, WorkDir: workDir}, fmt.Errorf("build failed; see %s: %w", bc.logPath, buildErr)
 	}
 
@@ -462,7 +653,20 @@ func Build(ctx context.Context, config Config) (Result, error) {
 		return Result{}, fmt.Errorf("build completed but no linked executable, library, or installable Meson payload was found under %s", searchRoot)
 	}
 
+	for index := range inspection.Artifacts {
+		relative := packageRelative(packageDir, inspection.Artifacts[index].PackagedPath)
+		inspection.Artifacts[index].PackagePath = relative
+		inspection.Artifacts[index].PackagedPath = filepath.Join(finalPackageDir, filepath.FromSlash(relative))
+	}
+	portedSourceDir, err := bc.preservePortedSource()
+	if err != nil {
+		return Result{}, fmt.Errorf("preserve final Codex source snapshot: %w", err)
+	}
+	if err := os.WriteFile(bc.logPath, bc.logBuffer.Bytes(), 0o644); err != nil {
+		return Result{}, err
+	}
 	manifest := baseManifest(bc, analysisPath, planPath)
+	manifest.PortedSourceDir = portedSourceDir
 	manifest.Artifacts = inspection.Artifacts
 	manifest.Warnings = append(manifest.Warnings, inspection.Warnings...)
 	manifest.Assurance = model.AssuranceStaticValidated
@@ -477,14 +681,44 @@ func Build(ctx context.Context, config Config) (Result, error) {
 	}
 	manifest.Warnings = append(manifest.Warnings, "target artifacts were not executed; runtime and behavioral validation are intentionally outside Miruri v0.1")
 
-	manifestPath := filepath.Join(packageDir, "manifest.json")
-	if err := fsutil.WriteJSON(manifestPath, manifest); err != nil {
+	manifest, _, err = bc.finalizeManifest(manifest, "succeeded")
+	if err != nil {
 		return Result{}, err
 	}
+	if err := publishArtifactSet(packageDir, finalPackageDir); err != nil {
+		return Result{}, err
+	}
+	manifestPath := filepath.Join(finalPackageDir, artifactset.ManifestName)
 	if !config.KeepWork {
 		_ = os.RemoveAll(workDir)
 	}
-	return Result{Manifest: manifest, ManifestPath: manifestPath, PackageDir: packageDir, WorkDir: workDir}, nil
+	return Result{Manifest: manifest, ManifestPath: manifestPath, PackageDir: finalPackageDir, WorkDir: workDir}, nil
+}
+
+func (bc *buildContext) preservePortedSource() (string, error) {
+	if len(bc.codexRepairs) == 0 {
+		return "", nil
+	}
+	info, err := os.Stat(bc.sourceDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("isolated source workspace is not a directory: %s", bc.sourceDir)
+	}
+	relative := "ported-source"
+	destination := filepath.Join(bc.packageDir, relative)
+	if err := os.RemoveAll(destination); err != nil {
+		return "", err
+	}
+	if err := fsutil.CopyTree(bc.sourceDir, destination); err != nil {
+		return "", err
+	}
+	bc.logf("Miruri source snapshot: preserved final Codex workspace at %s\\n", relative)
+	return relative, nil
 }
 
 func (bc *buildContext) runBuild(parent context.Context) error {
@@ -1109,6 +1343,49 @@ func pkgConfigLibraryPath(sysrootPath string) string {
 	return strings.Join(paths, string(os.PathListSeparator))
 }
 
+func portContinuationStatus(mode codex.TaskMode, status string) bool {
+	if mode != codex.TaskPort && mode != codex.TaskAuto {
+		return false
+	}
+	switch status {
+	case "progress", "blocked", "no-change":
+		return true
+	default:
+		return false
+	}
+}
+
+func portContinuationDirective(attempt int, response codex.RepairResponse, changedFiles []string) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "Previous port attempt %d returned status %q.\n", attempt, response.Status)
+	switch response.Status {
+	case "blocked", "no-change":
+		out.WriteString("Miruri is NOT treating that status as terminal while the port retry budget remains. A broad native backend, many platform-specific APIs, or a large refactor is implementation work, not a terminal blocker. Unless a concrete prerequisite outside the workspace/toolchain prevents every meaningful next step, make concrete source/build changes in this attempt instead of only describing required work.\n")
+	case "progress":
+		out.WriteString("Miruri accepted the previous changes as incremental porting progress. Continue from them; do not discard or replace preserved original behavior merely to finish faster. Make another coherent implementation slice and return progress again if more fidelity-preserving work remains.\n")
+	}
+	if summary := strings.TrimSpace(response.Summary); summary != "" {
+		fmt.Fprintf(&out, "Previous summary: %s\n", summary)
+	}
+	if len(changedFiles) == 0 {
+		out.WriteString("Previous accepted source/build changes: none. This attempt must make edits if any locally implementable porting work remains.\n")
+	} else {
+		fmt.Fprintf(&out, "Previous accepted source/build changes: %s\n", strings.Join(changedFiles, ", "))
+	}
+	if len(response.RemainingRisks) > 0 {
+		out.WriteString("Review the previous remaining risks before doing more work. Only implement a risk if the shipped project actually exercises that case. Do not expand scope to support hypothetical formats/cases that are absent from this repository, and do not keep advisory caveats in remaining_risks.\n")
+		out.WriteString("Previous remaining risks:\n")
+		for _, risk := range response.RemainingRisks {
+			if nonBlockingPortCaveat(risk) {
+				fmt.Fprintf(&out, "  - [advisory; do not treat as a completion blocker after Miruri rebuild] %s\n", risk)
+			} else {
+				fmt.Fprintf(&out, "  - [re-evaluate project relevance, then fix if actually exercised] %s\n", risk)
+			}
+		}
+	}
+	return strings.TrimSpace(out.String())
+}
+
 func (bc *buildContext) resetAfterRepair(parent context.Context) error {
 	if err := os.RemoveAll(bc.buildDir); err != nil {
 		return err
@@ -1353,6 +1630,209 @@ func compilerCommand(compiler string, profile model.TargetProfile, sysrootPath s
 	return strings.Join(parts, " ")
 }
 
+func publishArtifactSet(stagingDir, finalDir string) error {
+	if stagingDir == "" || finalDir == "" {
+		return fmt.Errorf("artifact publication requires staging and final directories")
+	}
+	stagingAbs, err := filepath.Abs(stagingDir)
+	if err != nil {
+		return err
+	}
+	finalAbs, err := filepath.Abs(finalDir)
+	if err != nil {
+		return err
+	}
+	if filepath.Dir(stagingAbs) == finalAbs || stagingAbs == finalAbs {
+		return fmt.Errorf("invalid artifact publication paths: staging=%s final=%s", stagingAbs, finalAbs)
+	}
+	if _, err := os.Stat(filepath.Join(stagingAbs, artifactset.ManifestName)); err != nil {
+		return fmt.Errorf("staged artifact set is incomplete: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(finalAbs), 0o755); err != nil {
+		return err
+	}
+	backup := finalAbs + fmt.Sprintf(".previous-%d", time.Now().UnixNano())
+	hadPrevious := false
+	if _, err := os.Lstat(finalAbs); err == nil {
+		if err := os.Rename(finalAbs, backup); err != nil {
+			return fmt.Errorf("preserve previous artifact set: %w", err)
+		}
+		hadPrevious = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect previous artifact set: %w", err)
+	}
+	if err := os.Rename(stagingAbs, finalAbs); err != nil {
+		if hadPrevious {
+			_ = os.Rename(backup, finalAbs)
+		}
+		return fmt.Errorf("publish staged artifact set: %w", err)
+	}
+	if hadPrevious {
+		_ = os.RemoveAll(backup)
+	}
+	return nil
+}
+
+func loadCodexInstructionsForAttempt(config Config) (string, error) {
+	if strings.TrimSpace(config.CodexInstructionsFile) == "" {
+		return config.CodexInstructions, nil
+	}
+	payload, err := os.ReadFile(config.CodexInstructionsFile)
+	if err != nil {
+		return "", fmt.Errorf("read instructions file %q: %w", config.CodexInstructionsFile, err)
+	}
+	if !utf8.Valid(payload) {
+		return "", fmt.Errorf("instructions file %q is not valid UTF-8", config.CodexInstructionsFile)
+	}
+	sections := make([]string, 0, 2)
+	if value := strings.TrimSpace(string(payload)); value != "" {
+		sections = append(sections, value)
+	}
+	if value := strings.TrimSpace(config.CodexInstructionsInline); value != "" {
+		sections = append(sections, value)
+	}
+	return strings.Join(sections, "\n\n"), nil
+}
+
+type buildRequestIdentity struct {
+	SchemaVersion string              `json:"schema_version"`
+	ProjectDigest string              `json:"project_digest"`
+	Target        model.TargetProfile `json:"target"`
+	BuildSystem   model.BuildSystem   `json:"build_system"`
+	Sysroot       struct {
+		Mode           string `json:"mode,omitempty"`
+		Path           string `json:"path,omitempty"`
+		Provider       string `json:"provider,omitempty"`
+		Source         string `json:"source,omitempty"`
+		ManifestDigest string `json:"manifest_digest,omitempty"`
+		Platform       string `json:"platform,omitempty"`
+	} `json:"sysroot"`
+	Generator               string         `json:"generator,omitempty"`
+	UseCodex                bool           `json:"use_codex"`
+	CodexMode               codex.TaskMode `json:"codex_mode,omitempty"`
+	CodexModel              string         `json:"codex_model,omitempty"`
+	CodexProfile            string         `json:"codex_profile,omitempty"`
+	CodexInstructionsDigest string         `json:"codex_instructions_digest,omitempty"`
+	MaxRepairs              int            `json:"max_repairs"`
+	DryRun                  bool           `json:"dry_run"`
+	MiruriVersion           string         `json:"miruri_version"`
+}
+
+func buildRequestDigest(config Config, analysis model.AnalysisReport, buildSystem model.BuildSystem, resolution sysroot.Resolution) (string, error) {
+	version := config.Version
+	if version == "" {
+		version = "dev"
+	}
+	identity := buildRequestIdentity{
+		SchemaVersion:           "miruri.build-request.v1",
+		ProjectDigest:           analysis.ProjectDigest,
+		Target:                  config.Target,
+		BuildSystem:             buildSystem,
+		Generator:               config.Generator,
+		UseCodex:                config.UseCodex,
+		CodexMode:               config.CodexMode,
+		CodexModel:              config.CodexModel,
+		CodexProfile:            config.CodexProfile,
+		CodexInstructionsDigest: digestText(config.CodexInstructions),
+		MaxRepairs:              config.MaxRepairs,
+		DryRun:                  config.DryRun,
+		MiruriVersion:           version,
+	}
+	identity.Sysroot.Mode = resolution.Mode
+	identity.Sysroot.Provider = resolution.Provider
+	identity.Sysroot.Source = resolution.Source
+	identity.Sysroot.ManifestDigest = resolution.ManifestDigest
+	identity.Sysroot.Platform = resolution.Platform
+	if resolution.ManifestDigest == "" {
+		identity.Sysroot.Path = filepath.Clean(resolution.Path)
+	}
+	return fingerprint.JSON(identity)
+}
+
+func digestText(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func reuseArtifactSet(packageDir, projectDigest, requestDigest string, progress io.Writer) (model.BuildManifest, bool) {
+	if _, err := os.Stat(filepath.Join(packageDir, artifactset.ManifestName)); err != nil {
+		return model.BuildManifest{}, false
+	}
+	_, manifest, err := artifactset.LoadManifest(packageDir)
+	if err != nil {
+		progressf(progress, "Miruri reuse: existing artifact set is unreadable: %v\n", err)
+		return model.BuildManifest{}, false
+	}
+	if manifest.BuildStatus != "succeeded" && manifest.BuildStatus != "dry-run" {
+		progressf(progress, "Miruri reuse: existing artifact set status is %q; rebuilding.\n", manifest.BuildStatus)
+		return model.BuildManifest{}, false
+	}
+	if manifest.ProjectDigest != projectDigest || manifest.RequestDigest != requestDigest {
+		progressf(progress, "Miruri reuse: build identity changed; rebuilding target %s.\n", manifest.Target.ID)
+		return model.BuildManifest{}, false
+	}
+	report, err := verify.ArtifactSet(packageDir, verify.Options{Strict: true})
+	if err != nil || !report.Valid {
+		if err != nil {
+			progressf(progress, "Miruri reuse: verification failed: %v\n", err)
+		} else {
+			progressf(progress, "Miruri reuse: existing artifact set has %d verification finding(s); rebuilding.\n", len(report.Findings))
+		}
+		return model.BuildManifest{}, false
+	}
+	progressf(progress, "Miruri reuse: verified matching artifact set for %s (%s).\n", manifest.Target.ID, manifest.BuildID)
+	return manifest, true
+}
+
+func progressf(progress io.Writer, format string, args ...any) {
+	if progress != nil {
+		_, _ = fmt.Fprintf(progress, format, args...)
+	}
+}
+
+func (bc *buildContext) finalizeManifest(manifest model.BuildManifest, status string) (model.BuildManifest, string, error) {
+	manifest.GeneratedAt = time.Now().UTC()
+	manifest.StartedAt = bc.startedAt
+	manifest.DurationMillis = time.Since(bc.startedAt).Milliseconds()
+	manifest.BuildStatus = status
+	manifest.BuildID = bc.buildID
+	manifest.ProjectDigest = bc.analysis.ProjectDigest
+	manifest.RequestDigest = bc.requestDigest
+	manifest.LicenseReportFile = "licenses.json"
+	manifest.SBOMFile = "sbom.spdx.json"
+	manifest.IntegrityFile = artifactset.IntegrityName
+
+	licenseReport, err := licenses.ScanWithOptions(bc.projectAbs, bc.analysis.ProjectName, bc.analysis.ProjectDigest, licenses.Options{ExcludePaths: bc.projectExclusions})
+	if err != nil {
+		return manifest, "", fmt.Errorf("scan license evidence: %w", err)
+	}
+	if err := fsutil.WriteJSON(filepath.Join(bc.packageDir, manifest.LicenseReportFile), licenseReport); err != nil {
+		return manifest, "", fmt.Errorf("write license report: %w", err)
+	}
+	document := sbom.Generate(manifest, licenseReport, manifest.MiruriVersion)
+	if err := fsutil.WriteJSON(filepath.Join(bc.packageDir, manifest.SBOMFile), document); err != nil {
+		return manifest, "", fmt.Errorf("write SPDX SBOM: %w", err)
+	}
+	manifestPath := filepath.Join(bc.packageDir, artifactset.ManifestName)
+	if err := fsutil.WriteJSON(manifestPath, manifest); err != nil {
+		return manifest, "", fmt.Errorf("write manifest: %w", err)
+	}
+	if _, err := artifactset.WriteIntegrity(bc.packageDir); err != nil {
+		return manifest, manifestPath, fmt.Errorf("write integrity index: %w", err)
+	}
+	verification, err := verify.ArtifactSet(bc.packageDir, verify.Options{Strict: true})
+	if err != nil {
+		return manifest, manifestPath, fmt.Errorf("verify staged artifact set: %w", err)
+	}
+	if !verification.Valid {
+		return manifest, manifestPath, fmt.Errorf("verify staged artifact set: %d finding(s)", len(verification.Findings))
+	}
+	return manifest, manifestPath, nil
+}
+
 func baseManifest(bc *buildContext, analysisPath, planPath string) model.BuildManifest {
 	version := bc.config.Version
 	if version == "" {
@@ -1361,15 +1841,19 @@ func baseManifest(bc *buildContext, analysisPath, planPath string) model.BuildMa
 	manifest := model.BuildManifest{
 		SchemaVersion: "miruri.manifest.v1",
 		GeneratedAt:   time.Now().UTC(),
+		StartedAt:     bc.startedAt,
 		MiruriVersion: version,
+		BuildID:       bc.buildID,
 		ProjectName:   bc.analysis.ProjectName,
+		ProjectDigest: bc.analysis.ProjectDigest,
+		RequestDigest: bc.requestDigest,
 		Target:        bc.config.Target,
 		BuildSystem:   bc.buildSystem,
 		Artifacts:     []model.ArtifactInfo{},
 		CodexRepairs:  append([]model.CodexRepairAttempt(nil), bc.codexRepairs...),
-		BuildLog:      filepath.ToSlash(bc.logPath),
-		AnalysisFile:  filepath.ToSlash(analysisPath),
-		PlanFile:      filepath.ToSlash(planPath),
+		BuildLog:      packageRelative(bc.packageDir, bc.logPath),
+		AnalysisFile:  packageRelative(bc.packageDir, analysisPath),
+		PlanFile:      packageRelative(bc.packageDir, planPath),
 	}
 	if bc.sysrootInfo.Mode != "" {
 		provenance := bc.sysrootInfo.Provenance()

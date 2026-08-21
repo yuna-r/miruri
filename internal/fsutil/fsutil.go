@@ -10,6 +10,46 @@ import (
 	"strings"
 )
 
+// CanonicalPath resolves symlinks through the deepest existing ancestor and
+// then appends any not-yet-created suffix. It provides a stable filesystem
+// boundary for source roots and generated output paths without requiring the
+// destination itself to exist.
+func CanonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	absolute = filepath.Clean(absolute)
+	current := absolute
+	var suffix []string
+	for {
+		_, statErr := os.Lstat(current)
+		if statErr == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", fmt.Errorf("resolve symlinks in %s: %w", current, err)
+			}
+			resolved, err = filepath.Abs(resolved)
+			if err != nil {
+				return "", err
+			}
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("inspect path %s: %w", current, statErr)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("cannot resolve an existing ancestor for %s", absolute)
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
 func WriteJSON(path string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -22,17 +62,29 @@ func WriteJSON(path string, value any) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+type CopyTreeOptions struct {
+	ExcludePaths []string
+}
+
 func CopyTree(source, destination string) error {
-	sourceAbs, err := filepath.Abs(source)
+	return CopyTreeWithOptions(source, destination, CopyTreeOptions{})
+}
+
+func CopyTreeWithOptions(source, destination string, options CopyTreeOptions) error {
+	sourceAbs, err := CanonicalPath(source)
 	if err != nil {
 		return err
 	}
-	destinationAbs, err := filepath.Abs(destination)
+	destinationAbs, err := CanonicalPath(destination)
 	if err != nil {
 		return err
 	}
 	if sourceAbs == destinationAbs || strings.HasPrefix(destinationAbs+string(os.PathSeparator), sourceAbs+string(os.PathSeparator)) {
 		return fmt.Errorf("destination must not be inside source: %s", destinationAbs)
+	}
+	excludedPaths, err := normalizeCopyExclusions(sourceAbs, options.ExcludePaths)
+	if err != nil {
+		return err
 	}
 	return filepath.WalkDir(sourceAbs, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -41,6 +93,12 @@ func CopyTree(source, destination string) error {
 		rel, err := filepath.Rel(sourceAbs, path)
 		if err != nil {
 			return err
+		}
+		if rel != "." && excludedPaths[filepath.Clean(path)] {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if entry.IsDir() && rel != "." && skipDirectory(entry.Name()) {
 			return filepath.SkipDir
@@ -68,6 +126,33 @@ func CopyTree(source, destination string) error {
 		}
 		return CopyFile(path, targetPath, info.Mode().Perm())
 	})
+}
+
+func normalizeCopyExclusions(sourceRoot string, values []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		candidate := filepath.FromSlash(value)
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(sourceRoot, candidate)
+		}
+		absolute, err := CanonicalPath(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("resolve copy exclusion %q: %w", value, err)
+		}
+		relative, err := filepath.Rel(sourceRoot, absolute)
+		if err != nil {
+			return nil, fmt.Errorf("relativize copy exclusion %q: %w", value, err)
+		}
+		if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
+			continue
+		}
+		result[absolute] = true
+	}
+	return result, nil
 }
 
 func CopyFile(source, destination string, mode fs.FileMode) error {

@@ -11,7 +11,10 @@
     "target",
     "build_system",
     "assurance",
-    "artifacts"
+    "artifacts",
+    "build_log",
+    "analysis_file",
+    "plan_file"
   ],
   "properties": {
     "schema_version": {
@@ -21,24 +24,117 @@
       "type": "string",
       "format": "date-time"
     },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
     "miruri_version": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
+    },
+    "build_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{20}$"
+    },
+    "build_status": {
+      "enum": [
+        "dry-run",
+        "succeeded",
+        "failed"
+      ]
     },
     "project_name": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
+    },
+    "project_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reused": {
+      "type": "boolean"
     },
     "target": {
       "type": "object",
       "required": [
         "id",
+        "display_name",
         "os",
         "arch",
         "triple",
-        "object_format"
-      ]
+        "object_format",
+        "cmake_system_name",
+        "cmake_processor",
+        "default_linker",
+        "requires_sysroot",
+        "requires_platform_sdk",
+        "capabilities"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "triple": {
+          "type": "string",
+          "minLength": 1
+        },
+        "object_format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cmake_system_name": {
+          "type": "string"
+        },
+        "cmake_processor": {
+          "type": "string"
+        },
+        "default_linker": {
+          "type": "string"
+        },
+        "requires_sysroot": {
+          "type": "boolean"
+        },
+        "requires_platform_sdk": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
     },
     "build_system": {
-      "type": "string"
+      "enum": [
+        "cmake",
+        "meson",
+        "autotools",
+        "make",
+        "unknown"
+      ]
     },
     "sysroot": {
       "type": "object",
@@ -144,6 +240,10 @@
           "packaged_path": {
             "type": "string"
           },
+          "package_path": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          },
           "format": {
             "type": "string"
           },
@@ -176,23 +276,9 @@
               "type": "string"
             }
           }
-        }
+        },
+        "additionalProperties": false
       }
-    },
-    "warnings": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "build_log": {
-      "type": "string"
-    },
-    "analysis_file": {
-      "type": "string"
-    },
-    "plan_file": {
-      "type": "string"
     },
     "codex_repairs": {
       "type": "array",
@@ -209,7 +295,6 @@
             "minimum": 1
           },
           "mode": {
-            "type": "string",
             "enum": [
               "repair",
               "auto",
@@ -217,7 +302,6 @@
             ]
           },
           "status": {
-            "type": "string",
             "enum": [
               "repaired",
               "ported",
@@ -260,6 +344,12 @@
           "prompt_file": {
             "type": "string"
           },
+          "diagnostics_file": {
+            "type": "string"
+          },
+          "diagnostics_json_file": {
+            "type": "string"
+          },
           "event_log": {
             "type": "string"
           },
@@ -274,6 +364,25 @@
           },
           "patch_file": {
             "type": "string"
+          },
+          "discarded_changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "reason"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
           },
           "usage": {
             "type": "object",
@@ -299,36 +408,39 @@
           },
           "error": {
             "type": "string"
-          },
-          "diagnostics_file": {
-            "type": "string"
-          },
-          "diagnostics_json_file": {
-            "type": "string"
-          },
-          "discarded_changes": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": [
-                "path",
-                "reason"
-              ],
-              "properties": {
-                "path": {
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            }
           }
         },
         "additionalProperties": false
       }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "build_log": {
+      "type": "string"
+    },
+    "analysis_file": {
+      "type": "string"
+    },
+    "plan_file": {
+      "type": "string"
+    },
+    "license_report_file": {
+      "type": "string"
+    },
+    "sbom_file": {
+      "type": "string"
+    },
+    "integrity_file": {
+      "type": "string"
+    },
+    "ported_source_dir": {
+      "type": "string",
+      "minLength": 1
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

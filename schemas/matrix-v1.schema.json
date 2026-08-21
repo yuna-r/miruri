@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/matrix-v1.json",
+  "title": "Miruri Build Matrix Report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "started_at",
+    "duration_ms",
+    "project_name",
+    "project_path",
+    "project_digest",
+    "mode",
+    "jobs",
+    "fail_fast",
+    "results",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.matrix.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "project_name": {
+      "type": "string"
+    },
+    "project_path": {
+      "type": "string"
+    },
+    "project_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "mode": {
+      "enum": [
+        "plan",
+        "build"
+      ]
+    },
+    "jobs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fail_fast": {
+      "type": "boolean"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "target",
+          "status"
+        ],
+        "properties": {
+          "target": {
+            "type": "object",
+            "required": [
+              "id",
+              "display_name",
+              "os",
+              "arch",
+              "triple",
+              "object_format",
+              "cmake_system_name",
+              "cmake_processor",
+              "default_linker",
+              "requires_sysroot",
+              "requires_platform_sdk",
+              "capabilities"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "os": {
+                "type": "string",
+                "minLength": 1
+              },
+              "arch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "triple": {
+                "type": "string",
+                "minLength": 1
+              },
+              "object_format": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cmake_system_name": {
+                "type": "string"
+              },
+              "cmake_processor": {
+                "type": "string"
+              },
+              "default_linker": {
+                "type": "string"
+              },
+              "requires_sysroot": {
+                "type": "boolean"
+              },
+              "requires_platform_sdk": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "succeeded",
+              "reused",
+              "failed",
+              "canceled",
+              "blocked"
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "plan": {
+            "$ref": "https://miruri.dev/schema/plan-v1.json"
+          },
+          "package_dir": {
+            "type": "string"
+          },
+          "manifest_path": {
+            "type": "string"
+          },
+          "build_id": {
+            "type": "string"
+          },
+          "build_status": {
+            "type": "string"
+          },
+          "assurance": {
+            "type": "string"
+          },
+          "artifact_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reused": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total",
+        "planned",
+        "succeeded",
+        "reused",
+        "failed",
+        "canceled",
+        "blocked"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "planned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reused": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canceled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocked": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "report_path": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

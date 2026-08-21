@@ -51,20 +51,24 @@ type Status struct {
 }
 
 type RepairRequest struct {
-	Binary        string
-	Mode          TaskMode
-	Workspace     string
-	Target        model.TargetProfile
-	BuildSystem   model.BuildSystem
-	BuildLog      string
-	Attempt       int
-	OutputDir     string
-	Timeout       time.Duration
-	Model         string
-	Profile       string
-	AuthMode      AuthMode
-	MiruriVersion string
-	Progress      func(ProgressEvent)
+	Session               *AppServerSession
+	Binary                string
+	Mode                  TaskMode
+	Workspace             string
+	Target                model.TargetProfile
+	BuildSystem           model.BuildSystem
+	BuildLog              string
+	Attempt               int
+	OutputDir             string
+	Timeout               time.Duration
+	Model                 string
+	Profile               string
+	AuthMode              AuthMode
+	MiruriVersion         string
+	PreservationBaseline  string
+	ContinuationDirective string
+	CustomInstructions    string
+	Progress              func(ProgressEvent)
 }
 
 type ProgressEvent struct {
@@ -215,6 +219,10 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 		return RepairResult{}, err
 	}
 
+	if request.Session != nil {
+		return repairViaAppServer(parent, request, diagnosticReport.Text, promptPath, eventsPath, stderrPath, finalPath, schemaPath, diagnosticsPath, diagnosticsJSONPath)
+	}
+
 	// --ask-for-approval is a top-level Codex CLI option. It must appear
 	// before the `exec` subcommand on current Codex CLI releases.
 	args := []string{
@@ -335,8 +343,10 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 		line := append([]byte(nil), scanner.Bytes()...)
 		if _, err := eventsFile.Write(append(line, '\n')); err != nil {
 			_ = command.Process.Kill()
-			_ = command.Wait()
+			// StdoutPipe and StderrPipe are closed by Cmd.Wait. Drain stderr first
+			// so a fast process exit cannot turn valid output into os.ErrClosed.
 			stderrWG.Wait()
+			_ = command.Wait()
 			return result, fmt.Errorf("write Codex event log: %w", err)
 		}
 		consumeEvent(line, &result.Events)
@@ -347,8 +357,11 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 		}
 	}
 	scanErr := scanner.Err()
-	waitErr := command.Wait()
+	// Cmd.Wait closes pipes after observing process exit. The stderr reader must
+	// reach EOF before Wait, otherwise a fast-exiting Codex process can race with
+	// pipe closure and surface a spurious "file already closed" read error.
 	stderrWG.Wait()
+	waitErr := command.Wait()
 	result.Duration = time.Since(start)
 	result.DurationMillis = result.Duration.Milliseconds()
 	result.Stderr = stderrBuffer.String()
@@ -381,7 +394,7 @@ func Repair(parent context.Context, request RepairRequest) (RepairResult, error)
 		return result, errors.New(result.Error)
 	}
 	switch result.Response.Status {
-	case "repaired", "ported", "blocked", "no-change":
+	case "repaired", "ported", "progress", "blocked", "no-change":
 	default:
 		result.Error = fmt.Sprintf("Codex structured response has invalid status %q", result.Response.Status)
 		return result, errors.New(result.Error)
@@ -440,16 +453,24 @@ Scope policy:
 		mission = `Goal:
 Perform a feature-preserving platform port of this isolated copied source workspace and make its existing or revised build system produce a linked target artifact. Do not execute target artifacts.
 
-Full-port authorization:
+Full-port authorization and fidelity contract:
 - You are explicitly authorized to create a new target platform backend and to make coherent multi-file architectural changes when required.
 - You may add target-specific source directories, platform abstraction interfaces, adapters, build-system branches, resources, generated text metadata, and target-native entry points.
+- A Miruri port is a migration of the existing product, NOT a clone, remake, visual approximation, clean-room rewrite, or new implementation that merely resembles it.
+- Treat the original product/domain/game logic, data structures, algorithms, content, assets, file formats, shaders, level data, physics rules, and observable behavior as authoritative. Reuse them directly or port them in place behind platform abstractions/conditional compilation.
+- New target-platform code should be adaptation glue for OS services and graphics/audio/input APIs. Do not move domain/game/application behavior into a new parallel backend when the existing implementation can be retained or ported.
+- Do not replace original scenes, models, textures, shaders, levels, UI content, physics, AI, gameplay, business rules, or media with procedural, simplified, placeholder, substitute, or look-alike implementations just to obtain a linked artifact.
+- Packaging an original asset without actually consuming it in the target implementation does not count as preserving that asset pipeline.
 - Preserve the original source-platform backend instead of replacing or deleting it whenever practical.
-- Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration and other product features to semantically appropriate target-native facilities rather than stubbing or disabling them.
-- A requirement for a new backend is NOT by itself a reason to return "blocked". Creating that backend is the task.
+- Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration and other platform services to semantically appropriate target-native facilities while keeping the original higher-level implementation intact.
+- A requirement for a new backend is NOT by itself a reason to return "blocked". Creating an adapter/backend is the task, but creating a different application is forbidden.
 - Prefer existing dependencies already present in the workspace/sysroot/toolchain. You may wire in a dependency already available locally, but do not fetch network resources.
-- If exact platform semantics do not exist, implement the closest behavior-preserving target-native equivalent and record the difference in assumptions/remaining_risks.
-- Return status "ported" when a substantial platform backend/architecture port was implemented, or "repaired" for a smaller successful portability change.
-- Return "blocked" only when completion genuinely requires unavailable source, an unavailable external dependency/SDK, an unspecified proprietary contract, or another constraint that cannot be resolved from the local workspace.`
+- This command is intentionally multi-attempt. A large backend, many Windows-only APIs, substantial refactoring, or inability to finish the whole port in one turn is NOT a reason to stop. Make the largest coherent fidelity-preserving implementation slice you can in this attempt.
+- If meaningful local work was completed but the full port is not finished, return status "progress", keep the remaining fidelity gaps explicit, and let Miruri rebuild and continue in the next attempt.
+- If an original feature or content pipeline cannot yet be preserved, continue implementing prerequisites/adapters that are possible from the local workspace rather than substituting the feature.
+- Return status "ported" or "repaired" only when no known product feature is omitted, stubbed, substituted, simplified, or approximated. Such losses must not be hidden in assumptions/remaining_risks while reporting success.
+- Return "blocked" only when a concrete prerequisite outside the local workspace/toolchain prevents ANY further meaningful implementation work, such as unavailable proprietary source, an unavailable required external SDK with no target-native equivalent, or an unspecified proprietary contract. Name the exact prerequisite and evidence. Never return "blocked" merely because the port is broad, difficult, native-backend-heavy, or too large for one turn.
+- Do not spend an attempt only explaining what would need to be written. Unless truly externally blocked, edit source/build files and advance the port.`
 	} else if mode == TaskAuto {
 		mission = `Goal:
 Produce a linked target artifact from this isolated copied source workspace without executing target artifacts.
@@ -458,13 +479,20 @@ Automatic escalation policy:
 - Start with the smallest coherent portability repair.
 - If the failure reveals that the source is tied to another OS/CPU architecture or lacks a target platform backend, automatically escalate within this same task to a full feature-preserving platform port. Do not wait for additional authorization.
 - You are explicitly authorized to create target-specific source directories, platform abstraction interfaces, adapters, build-system branches, resources, generated text metadata, and target-native entry points when needed.
+- A Miruri port is a migration of the existing product, NOT a clone, remake, visual approximation, clean-room rewrite, or new implementation that merely resembles it.
+- Preserve/reuse the original product/domain/game logic, algorithms, data, content, assets, shaders, level data, physics rules and file-format semantics. New target code should adapt platform APIs rather than replace higher-level behavior.
+- Do not replace original scenes, models, textures, shaders, levels, UI content, physics, AI, gameplay, business rules, or media with procedural, simplified, placeholder, substitute, or look-alike implementations just to obtain a linked artifact.
+- Packaging an original asset without actually consuming it in the target implementation does not count as preserving that asset pipeline.
 - Preserve the original source-platform backend instead of replacing or deleting it whenever practical.
-- Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration and other product features to semantically appropriate target-native facilities rather than stubbing or disabling them.
-- A requirement for a new backend is NOT by itself a reason to return "blocked". Creating that backend is explicitly authorized.
+- Port GUI, editor, rendering, audio, input, networking, persistence, printing, shell integration and other platform services to semantically appropriate target-native facilities while keeping the original higher-level implementation intact.
+- A requirement for a new backend is NOT by itself a reason to return "blocked". Creating an adapter/backend is explicitly authorized; creating a different application is forbidden.
 - Prefer existing dependencies already present in the workspace/sysroot/toolchain. You may wire in a dependency already available locally, but do not fetch network resources.
-- If exact platform semantics do not exist, implement the closest behavior-preserving target-native equivalent and record the difference in assumptions/remaining_risks.
-- Return status "ported" when a substantial platform backend/architecture port was implemented, or "repaired" for a smaller successful portability change.
-- Return "blocked" only when completion genuinely requires unavailable source, an unavailable external dependency/SDK, an unspecified proprietary contract, or another constraint that cannot be resolved from the local workspace.`
+- This command is intentionally multi-attempt. A broad native backend, many platform APIs, substantial refactoring, or inability to finish in one turn is NOT a reason to stop. Make the largest coherent fidelity-preserving implementation slice you can now.
+- If meaningful local work was completed but the full port is not finished, return status "progress", keep remaining fidelity gaps explicit, and let Miruri rebuild and continue.
+- If an original feature or content pipeline cannot yet be preserved, continue implementing locally available prerequisites/adapters rather than substituting the feature.
+- Return status "ported" or "repaired" only when no known product feature is omitted, stubbed, substituted, simplified, or approximated.
+- Return "blocked" only when a concrete prerequisite outside the local workspace/toolchain prevents ANY further meaningful implementation work. Never return it merely because the port is broad, difficult, native-backend-heavy, or too large for one turn.
+- Do not spend an attempt only explaining what would need to be written. Unless truly externally blocked, edit source/build files and advance the port.`
 	}
 
 	return fmt.Sprintf(`You are Miruri %s's Codex portability agent.
@@ -481,14 +509,31 @@ Target contract:
 Build system: %s
 Attempt: %d
 
+Original-project preservation baseline:
+%s
+
+Miruri continuation directive from earlier attempts:
+%s
+
+Target-specific port guidance:
+%s
+
+Operator-supplied custom instructions:
+%s
+
 %s
 
 Mandatory constraints:
 - Work only inside the current Git workspace. It is a disposable copy, not the user's original repository.
 - Preserve public APIs, file formats, protocols, persistent data semantics, observable behavior and license notices unless a target OS requires a documented native equivalent.
+- A target backend may adapt platform services, but it must not become a replacement implementation of the product/domain/game itself.
+- Before adding new domain logic, search for and reuse/port the corresponding original implementation. Prefer adapters around original code over parallel rewrites.
+- Judge fidelity primarily by preserved product semantics and observable behavior, not by whether the target source tree has the same class/file topology. When source-platform orchestration is inseparably coupled to platform APIs, a target-native controller/orchestration layer may faithfully re-express that control flow. Do not keep refactoring solely to eliminate code duplication once the original state transitions, calculations, content semantics, and observable behavior are preserved.
+- Structural/source-reuse debt by itself is not a completion blocker. Do not place duplication, an original UI/controller class not being directly reused, or a native restructuring into remaining_risks unless it causes a concrete shipped behavior/content semantic to be missing, simplified, substituted, or observably different.
 - Preserve optimized architecture-specific paths behind correct compile-time feature guards.
 - Prefer portable ISO C/C++ fallbacks before adding target-specific intrinsics when performance is not the defining behavior.
 - Do not silently disable GUI, rendering, shaders, audio, input, networking, plugins, assets or any other product feature.
+- If an error occurs, do not only fix the line where the error occurred; also check related lines and related parts of other files to see whether errors could occur there as well, and fix them if necessary.
 - Do not replace third-party code unless the replacement is license-compatible and the decision is documented in the structured response.
 - Do not use emulators or compatibility runners, including QEMU, Wine or Rosetta.
 - Do not run target executables, target test binaries, configure probes or generated target tools.
@@ -500,14 +545,56 @@ Mandatory constraints:
 
 Before finishing:
 1. Review the actual source/build-script diff.
-2. Ensure no feature was deleted merely to make compilation pass.
-3. Ensure source-platform code remains usable where practical.
-4. Return the required structured JSON summary. The changed_files field is advisory; Miruri independently computes the authoritative source patch and discards generated build products.
+2. Verify the target build still compiles/reuses original translation units whenever the original project contains implementation source; a new target entry point plus unused packaged assets is not sufficient.
+3. Verify shipped assets/content remain semantically consumed by the target implementation, not merely copied into the package.
+4. Ensure no feature was deleted, approximated, substituted, simplified, or moved into an unrelated replacement implementation merely to make compilation pass. Target-native restructuring is acceptable when it preserves the original behavior/content semantics.
+5. Ensure source-platform code remains usable where practical. Do not require identical class/file topology or direct reuse of platform-coupled UI/controller orchestration as a condition of completion.
+6. Return the required structured JSON summary. The remaining_risks array is reserved for known, project-relevant unresolved fidelity blockers that are actually exercised by this repository's shipped source/assets/configuration. Do not put hypothetical unsupported input formats or edge cases that are not used by this project, optional hardware that is absent on some machines, performance/optimization opportunities, Miruri's intentional lack of runtime execution, or build/relink verification that Miruri's subsequent rebuild can supersede into remaining_risks; mention those in the summary only if useful. If at least one locally implementable project-relevant fidelity blocker remains after making concrete progress, return "progress". If the target is linked and only advisory caveats remain, return "ported"/"repaired" even though Miruri has not executed the artifact. Reserve "blocked" for a concrete external prerequisite that prevents any further meaningful local implementation work. The changed_files field is advisory; Miruri independently computes the authoritative source patch and discards generated build products.
 
 Miruri-selected build diagnostics:
 
 %s
-`, version, mode, request.Target.ID, request.Target.OS, request.Target.Arch, request.Target.Triple, request.Target.ObjectFormat, request.BuildSystem, request.Attempt, mission, strings.TrimSpace(diagnosticSummary))
+`, version, mode, request.Target.ID, request.Target.OS, request.Target.Arch, request.Target.Triple, request.Target.ObjectFormat, request.BuildSystem, request.Attempt, baselineOrDefault(request.PreservationBaseline), continuationOrDefault(request.ContinuationDirective), platformPortGuidance(request.Target.OS), customInstructionsOrDefault(request.CustomInstructions), mission, strings.TrimSpace(diagnosticSummary))
+}
+
+func customInstructionsOrDefault(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "(none)"
+	}
+	return strings.TrimSpace(`Apply these operator instructions in addition to Miruri's target contract, fidelity contract, and mandatory constraints. When an operator instruction conflicts with those contracts, preserve Miruri's contracts and follow the non-conflicting portion of the operator instruction.`) + "\n\n" + value
+}
+
+func platformPortGuidance(targetOS string) string {
+	switch strings.ToLower(strings.TrimSpace(targetOS)) {
+	case "macos", "darwin":
+		return strings.TrimSpace(`- Windows-only C++/CX/UWP/WinRT coupling, Direct3D/D2D/DirectWrite, XAudio2/Media Foundation, and Windows input/lifecycle APIs are NOT terminal blockers merely because they require a substantial macOS backend.
+- Preserve and compile the original C/C++ product/game/domain implementation wherever possible. Isolate Windows platform services behind interfaces/conditional compilation and implement target-native adapters using frameworks available in the macOS SDK, such as AppKit, Metal/MetalKit, CoreAudio/AVFoundation, GameController, CoreText, and Foundation where semantically appropriate.
+- Objective-C++ (.mm) is allowed for thin macOS interop/adapters, but do NOT move the product/game/domain implementation into a new monolithic Objective-C++ replacement. Keep reusable logic in the original C/C++ translation units or port it in place.
+- Treat HLSL, DDS, SDKMesh, media, level, and other shipped content as migration inputs to preserve, not permission to invent procedural substitutes. Implement/port readers, converters, or shader equivalents from local source/data as needed.`)
+	case "linux":
+		return strings.TrimSpace(`- Windows-only Win32/UWP/WinRT, DirectX, XAudio2/Media Foundation, and Windows input/lifecycle APIs are NOT terminal blockers merely because Linux adapters are substantial.
+- Preserve and compile the original C/C++ product/game/domain implementation wherever possible. Isolate platform services and implement semantically equivalent Linux/backend code using dependencies and system facilities already available in the workspace/toolchain/sysroot.
+- Do not replace shipped assets, shaders, levels, physics, or media with procedural/look-alike substitutes merely to get a linked ELF artifact.`)
+	default:
+		return "- A broad source-platform API dependency is not terminal by itself. Preserve higher-level implementation and migrate platform services through target-native adapters available in the local workspace/toolchain."
+	}
+}
+
+func continuationOrDefault(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "  (none; this is the first implementation attempt)"
+	}
+	return value
+}
+
+func baselineOrDefault(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "  (baseline inventory unavailable)"
+	}
+	return value
 }
 
 func validateGitWorkspace(ctx context.Context, workspace string) error {
@@ -676,14 +763,14 @@ func walkEvent(value any, key string, summary *EventSummary) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for childKey, child := range typed {
-			lower := strings.ToLower(childKey)
+			lower := strings.ToLower(strings.ReplaceAll(childKey, "_", ""))
 			if text, ok := stringValue(child); ok {
 				switch lower {
-				case "thread_id", "session_id":
+				case "threadid", "sessionid":
 					if summary.ThreadID == "" {
 						summary.ThreadID = text
 					}
-				case "turn_id":
+				case "turnid":
 					if summary.TurnID == "" {
 						summary.TurnID = text
 					}
@@ -695,19 +782,19 @@ func walkEvent(value any, key string, summary *EventSummary) {
 			}
 			if number, ok := intValue(child); ok {
 				switch lower {
-				case "input_tokens":
+				case "inputtokens":
 					if number > summary.InputTokens {
 						summary.InputTokens = number
 					}
-				case "cached_input_tokens", "cached_tokens":
+				case "cachedinputtokens", "cachedtokens":
 					if number > summary.CachedInputTokens {
 						summary.CachedInputTokens = number
 					}
-				case "output_tokens":
+				case "outputtokens":
 					if number > summary.OutputTokens {
 						summary.OutputTokens = number
 					}
-				case "reasoning_output_tokens":
+				case "reasoningoutputtokens":
 					if number > summary.ReasoningOutputTokens {
 						summary.ReasoningOutputTokens = number
 					}
@@ -778,7 +865,7 @@ const repairResponseSchema = `{
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["repaired", "ported", "blocked", "no-change"]
+      "enum": ["repaired", "ported", "progress", "blocked", "no-change"]
     },
     "summary": {"type": "string", "minLength": 1},
     "changed_files": {
@@ -829,4 +916,115 @@ func ArtifactOnlyViolations(commands []string) []string {
 		}
 	}
 	return uniqueStrings(violations)
+}
+
+func repairViaAppServer(parent context.Context, request RepairRequest, diagnosticSummary, promptPath, eventsPath, stderrPath, finalPath, schemaPath, diagnosticsPath, diagnosticsJSONPath string) (RepairResult, error) {
+	prompt := buildPrompt(request, diagnosticSummary)
+	if request.Attempt > 1 {
+		prompt = buildAppServerContinuationPrompt(request, diagnosticSummary)
+	}
+	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
+		return RepairResult{}, err
+	}
+	var outputSchema map[string]any
+	decoder := json.NewDecoder(strings.NewReader(repairResponseSchema))
+	decoder.UseNumber()
+	if err := decoder.Decode(&outputSchema); err != nil {
+		return RepairResult{}, fmt.Errorf("decode embedded Codex response schema: %w", err)
+	}
+	if request.Timeout <= 0 {
+		request.Timeout = defaultRepairTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, request.Timeout)
+	defer cancel()
+
+	result := RepairResult{
+		Mode:                request.Mode,
+		Command:             []string{request.Session.binary, "app-server", "turn/start", request.Session.ThreadID()},
+		PromptPath:          promptPath,
+		EventsPath:          eventsPath,
+		StderrPath:          stderrPath,
+		FinalResponsePath:   finalPath,
+		SchemaPath:          schemaPath,
+		DiagnosticsPath:     diagnosticsPath,
+		DiagnosticsJSONPath: diagnosticsJSONPath,
+		Events:              EventSummary{Types: map[string]int{}, ThreadID: request.Session.ThreadID()},
+	}
+	start := time.Now()
+	finalText, lines, turnID, err := request.Session.RunTurn(ctx, prompt, outputSchema, request.Progress)
+	result.Duration = time.Since(start)
+	result.DurationMillis = result.Duration.Milliseconds()
+	result.Events.TurnID = turnID
+	result.Stderr = request.Session.Stderr()
+	_ = os.WriteFile(stderrPath, []byte(result.Stderr), 0o600)
+
+	eventsFile, fileErr := os.OpenFile(eventsPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if fileErr != nil {
+		return result, fileErr
+	}
+	for _, line := range lines {
+		if _, fileErr = eventsFile.Write(append(append([]byte(nil), line...), '\n')); fileErr != nil {
+			break
+		}
+		consumeEvent(line, &result.Events)
+	}
+	closeErr := eventsFile.Close()
+	if fileErr != nil {
+		return result, fmt.Errorf("write Codex app-server event log: %w", fileErr)
+	}
+	if closeErr != nil {
+		return result, fmt.Errorf("close Codex app-server event log: %w", closeErr)
+	}
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			result.Error = fmt.Sprintf("Codex app-server turn timed out after %s", request.Timeout)
+		} else {
+			result.Error = fmt.Sprintf("Codex app-server turn failed: %v", err)
+		}
+		return result, errors.New(result.Error)
+	}
+	if err := os.WriteFile(finalPath, []byte(finalText), 0o600); err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal([]byte(finalText), &result.Response); err != nil {
+		result.Error = fmt.Sprintf("decode Codex app-server structured response: %v", err)
+		return result, errors.New(result.Error)
+	}
+	if strings.TrimSpace(result.Response.Status) == "" || strings.TrimSpace(result.Response.Summary) == "" {
+		result.Error = "Codex app-server structured response is missing status or summary"
+		return result, errors.New(result.Error)
+	}
+	switch result.Response.Status {
+	case "repaired", "ported", "progress", "blocked", "no-change":
+	default:
+		result.Error = fmt.Sprintf("Codex app-server structured response has invalid status %q", result.Response.Status)
+		return result, errors.New(result.Error)
+	}
+	result.Response.ChangedFiles = normalizePaths(result.Response.ChangedFiles)
+	return result, nil
+}
+
+func buildAppServerContinuationPrompt(request RepairRequest, diagnosticSummary string) string {
+	return fmt.Sprintf(`Continue the same Miruri %s %s session for target %s. All fidelity, safety, artifact-only, and platform-port constraints from the first turn remain in force; do not reinterpret or weaken them.
+
+This is attempt %d. The workspace already contains every accepted change from earlier turns and Miruri has rebuilt it since the previous turn.
+
+Miruri continuation directive:
+%s
+
+Operator-supplied custom instructions for this attempt:
+%s
+
+Newest Miruri build diagnostics:
+%s
+
+Work from the current workspace state. Do not re-map or re-explain the repository unless needed for the new diagnostics. Inspect related code when an error indicates a wider issue, make the largest coherent fidelity-preserving implementation slice that is useful now, and return the same required structured JSON response schema.`,
+		request.MiruriVersion,
+		request.Mode,
+		request.Target.ID,
+		request.Attempt,
+		continuationOrDefault(request.ContinuationDirective),
+		customInstructionsOrDefault(request.CustomInstructions),
+		strings.TrimSpace(diagnosticSummary),
+	)
 }

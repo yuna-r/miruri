@@ -11,21 +11,25 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yuna-r/miruri/internal/analyze"
 	"github.com/yuna-r/miruri/internal/builder"
 	"github.com/yuna-r/miruri/internal/codex"
+	artifactcompare "github.com/yuna-r/miruri/internal/compare"
 	"github.com/yuna-r/miruri/internal/doctor"
 	"github.com/yuna-r/miruri/internal/fsutil"
 	artifactinspect "github.com/yuna-r/miruri/internal/inspect"
+	"github.com/yuna-r/miruri/internal/matrix"
 	"github.com/yuna-r/miruri/internal/model"
 	"github.com/yuna-r/miruri/internal/planner"
 	"github.com/yuna-r/miruri/internal/sysroot"
 	"github.com/yuna-r/miruri/internal/target"
+	"github.com/yuna-r/miruri/internal/verify"
 )
 
 var (
-	Version = "0.1.0-alpha.8.9"
+	Version = "0.1.0-alpha.9.11"
 	Commit  = "dev"
 	Date    = "unknown"
 )
@@ -60,6 +64,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPort(args[1:], stdout, stderr)
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
+	case "verify":
+		return runVerify(args[1:], stdout, stderr)
+	case "compare":
+		return runCompare(args[1:], stdout, stderr)
+	case "matrix":
+		return runMatrix(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "miruri: unknown command %q\n\n", args[0])
 		printRootHelp(stderr)
@@ -368,13 +378,18 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	project := positionalPath(set.Args())
-	report, err := analyze.Project(project, analyze.Options{})
+	outputPath, exclusions, err := resolveAnalysisOutput(*output)
 	if err != nil {
 		fmt.Fprintln(stderr, "miruri analyze:", err)
 		return 1
 	}
-	if *output != "" {
-		if err := fsutil.WriteJSON(*output, report); err != nil {
+	report, err := analyze.Project(project, analyze.Options{ExcludePaths: exclusions})
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri analyze:", err)
+		return 1
+	}
+	if outputPath != "" {
+		if err := fsutil.WriteJSON(outputPath, report); err != nil {
 			fmt.Fprintln(stderr, "miruri analyze:", err)
 			return 1
 		}
@@ -402,7 +417,13 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "miruri plan:", err)
 		return 1
 	}
-	report, err := analyze.Project(positionalPath(set.Args()), analyze.Options{})
+	project := positionalPath(set.Args())
+	outputPath, exclusions, err := resolveAnalysisOutput(*output)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri plan:", err)
+		return 1
+	}
+	report, err := analyze.Project(project, analyze.Options{ExcludePaths: exclusions})
 	if err != nil {
 		fmt.Fprintln(stderr, "miruri plan:", err)
 		return 1
@@ -416,8 +437,8 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 		Sysroot:          resolvedSysroot,
 		AutomaticSysroot: automaticSysroot,
 	})
-	if *output != "" {
-		if err := fsutil.WriteJSON(*output, plan); err != nil {
+	if outputPath != "" {
+		if err := fsutil.WriteJSON(outputPath, plan); err != nil {
 			fmt.Fprintln(stderr, "miruri plan:", err)
 			return 1
 		}
@@ -451,8 +472,11 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	codexProfile := set.String("codex-profile", "", "optional Codex CLI profile")
 	codexAuth := set.String("codex-auth", string(codex.AuthChatGPT), "Codex authentication policy: chatgpt or inherit")
 	codexTimeout := set.Duration("codex-timeout", 20*time.Minute, "timeout for each Codex repair attempt")
+	codexInstructions := set.String("instructions", "", "additional Codex instructions applied to every attempt")
+	codexInstructionsFile := set.String("instructions-file", "", "read additional Codex instructions from a UTF-8 text file")
 	keepWork := set.Bool("keep-work", false, "keep the isolated work directory")
 	dryRun := set.Bool("dry-run", false, "write analysis and plan without invoking build tools")
+	reuse := set.Bool("reuse", false, "reuse an identity-matching artifact set only after strict verification")
 	jsonOutput := set.Bool("json", false, "print the final manifest as JSON")
 	timeout := set.Duration("timeout", 30*time.Minute, "per build-attempt timeout")
 	if err := set.Parse(args); err != nil {
@@ -468,6 +492,20 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "miruri build:", err)
 		return 2
 	}
+	customInstructions, err := loadCodexInstructions(*codexInstructions, *codexInstructionsFile)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri build:", err)
+		return 2
+	}
+	instructionsFilePath, err := absoluteInstructionsFilePath(*codexInstructionsFile)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri build:", err)
+		return 2
+	}
+	if customInstructions != "" && !*useCodex {
+		fmt.Fprintln(stderr, "miruri build: --instructions/--instructions-file require --codex (or use miruri port)")
+		return 2
+	}
 	profile, err := target.Resolve(*targetID)
 	if err != nil {
 		fmt.Fprintln(stderr, "miruri build:", err)
@@ -475,28 +513,32 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	project := positionalPath(set.Args())
 	result, err := builder.Build(context.Background(), builder.Config{
-		ProjectDir:     project,
-		Target:         profile,
-		Sysroot:        *sysrootPath,
-		CacheDir:       *cacheDir,
-		Offline:        *offline,
-		RefreshSysroot: *refreshSysroot,
-		SysrootTimeout: *sysrootTimeout,
-		OutDir:         *outDir,
-		Generator:      *generator,
-		UseCodex:       *useCodex,
-		CodexMode:      codexMode,
-		MaxRepairs:     *maxRepairs,
-		CodexBinary:    *codexBin,
-		CodexModel:     *codexModel,
-		CodexProfile:   *codexProfile,
-		CodexAuth:      authMode,
-		CodexTimeout:   *codexTimeout,
-		KeepWork:       *keepWork,
-		DryRun:         *dryRun,
-		Version:        Version,
-		Timeout:        *timeout,
-		Progress:       stderr,
+		ProjectDir:              project,
+		Target:                  profile,
+		Sysroot:                 *sysrootPath,
+		CacheDir:                *cacheDir,
+		Offline:                 *offline,
+		RefreshSysroot:          *refreshSysroot,
+		SysrootTimeout:          *sysrootTimeout,
+		OutDir:                  *outDir,
+		Generator:               *generator,
+		UseCodex:                *useCodex,
+		CodexMode:               codexMode,
+		MaxRepairs:              *maxRepairs,
+		CodexBinary:             *codexBin,
+		CodexModel:              *codexModel,
+		CodexProfile:            *codexProfile,
+		CodexAuth:               authMode,
+		CodexTimeout:            *codexTimeout,
+		CodexInstructions:       customInstructions,
+		CodexInstructionsInline: *codexInstructions,
+		CodexInstructionsFile:   instructionsFilePath,
+		KeepWork:                *keepWork,
+		DryRun:                  *dryRun,
+		Reuse:                   *reuse,
+		Version:                 Version,
+		Timeout:                 *timeout,
+		Progress:                stderr,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "miruri build:", err)
@@ -507,6 +549,10 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Miruri artifact set: %s\n", result.PackageDir)
 	fmt.Fprintf(stdout, "Target:              %s\n", result.Manifest.Target.ID)
+	fmt.Fprintf(stdout, "Build ID:            %s\n", result.Manifest.BuildID)
+	fmt.Fprintf(stdout, "Build status:        %s\n", result.Manifest.BuildStatus)
+	fmt.Fprintf(stdout, "Project digest:      %s\n", result.Manifest.ProjectDigest)
+	fmt.Fprintf(stdout, "Reused:              %t\n", result.Reused)
 	if result.Manifest.Sysroot != nil {
 		fmt.Fprintf(stdout, "Sysroot mode:        %s\n", result.Manifest.Sysroot.Mode)
 		if result.Manifest.Sysroot.Path != "" {
@@ -531,9 +577,16 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		if !artifact.ArchitectureOK {
 			mark = "REVIEW"
 		}
-		fmt.Fprintf(stdout, "  [%s] %-15s %-10s %s\n", mark, artifact.Architecture, artifact.Kind, artifact.PackagedPath)
+		artifactPath := artifact.PackagePath
+		if artifactPath == "" {
+			artifactPath = artifact.PackagedPath
+		}
+		fmt.Fprintf(stdout, "  [%s] %-15s %-10s %s\n", mark, artifact.Architecture, artifact.Kind, artifactPath)
 	}
 	fmt.Fprintf(stdout, "Manifest:            %s\n", result.ManifestPath)
+	fmt.Fprintf(stdout, "SPDX SBOM:           %s\n", filepath.Join(result.PackageDir, filepath.FromSlash(result.Manifest.SBOMFile)))
+	fmt.Fprintf(stdout, "License evidence:    %s\n", filepath.Join(result.PackageDir, filepath.FromSlash(result.Manifest.LicenseReportFile)))
+	fmt.Fprintf(stdout, "Integrity index:     %s\n", filepath.Join(result.PackageDir, filepath.FromSlash(result.Manifest.IntegrityFile)))
 	return 0
 }
 
@@ -544,7 +597,7 @@ func runPort(args []string, stdout, stderr io.Writer) int {
 	// override these defaults.
 	defaults := []string{
 		"--codex",
-		"--codex-mode", string(codex.TaskAuto),
+		"--codex-mode", string(codex.TaskPort),
 		"--max-repairs", "12",
 		"--codex-timeout", "45m",
 	}
@@ -598,6 +651,332 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runVerify(args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("verify", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	strict := set.Bool("strict", false, "treat missing or unindexed metadata as verification errors")
+	jsonOutput := set.Bool("json", false, "print JSON")
+	output := set.String("output", "", "write the verification report to a JSON file")
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+	if len(set.Args()) != 1 {
+		fmt.Fprintln(stderr, "miruri verify: artifact-set directory or manifest path is required")
+		return 2
+	}
+	report, err := verify.ArtifactSet(set.Args()[0], verify.Options{Strict: *strict})
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri verify:", err)
+		return 1
+	}
+	if *output != "" {
+		if err := fsutil.WriteJSON(*output, report); err != nil {
+			fmt.Fprintln(stderr, "miruri verify:", err)
+			return 1
+		}
+	}
+	if *jsonOutput {
+		if code := writeJSON(stdout, stderr, report); code != 0 {
+			return code
+		}
+	} else {
+		status := "VALID"
+		if !report.Valid {
+			status = "INVALID"
+		}
+		fmt.Fprintf(stdout, "Artifact set:  %s\n", report.PackageDir)
+		fmt.Fprintf(stdout, "Target:        %s\n", report.TargetID)
+		fmt.Fprintf(stdout, "Build ID:      %s\n", report.BuildID)
+		fmt.Fprintf(stdout, "Status:        %s\n", status)
+		fmt.Fprintf(stdout, "Checked files: %d\n", report.CheckedFiles)
+		fmt.Fprintf(stdout, "Findings:      %d\n", len(report.Findings))
+		for _, finding := range report.Findings {
+			location := finding.Path
+			if location != "" {
+				location = " " + location
+			}
+			fmt.Fprintf(stdout, "  [%-7s] %-30s%s: %s\n", strings.ToUpper(string(finding.Severity)), finding.Code, location, finding.Message)
+		}
+	}
+	if !report.Valid {
+		return 3
+	}
+	return 0
+}
+
+func runCompare(args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("compare", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	jsonOutput := set.Bool("json", false, "print JSON")
+	output := set.String("output", "", "write the comparison report to a JSON file")
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+	if len(set.Args()) != 2 {
+		fmt.Fprintln(stderr, "miruri compare: exactly two artifact-set directories or manifests are required")
+		return 2
+	}
+	report, err := artifactcompare.ArtifactSets(set.Args()[0], set.Args()[1])
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri compare:", err)
+		return 1
+	}
+	if *output != "" {
+		if err := fsutil.WriteJSON(*output, report); err != nil {
+			fmt.Fprintln(stderr, "miruri compare:", err)
+			return 1
+		}
+	}
+	if *jsonOutput {
+		if code := writeJSON(stdout, stderr, report); code != 0 {
+			return code
+		}
+	} else {
+		fmt.Fprintf(stdout, "Left:                 %s (%s / %s)\n", report.Left.PackageDir, report.Left.TargetID, report.Left.BuildID)
+		fmt.Fprintf(stdout, "Right:                %s (%s / %s)\n", report.Right.PackageDir, report.Right.TargetID, report.Right.BuildID)
+		fmt.Fprintf(stdout, "Equivalent:           %t\n", report.Equivalent)
+		fmt.Fprintf(stdout, "Artifacts equivalent: %t\n", report.ArtifactEquivalent)
+		fmt.Fprintf(stdout, "Artifacts:            +%d -%d ~%d =%d\n", report.ArtifactSummary.Added, report.ArtifactSummary.Removed, report.ArtifactSummary.Changed, report.ArtifactSummary.Same)
+		fmt.Fprintf(stdout, "Differences:          %d\n", len(report.Differences))
+		for _, difference := range report.Differences {
+			fmt.Fprintf(stdout, "  [%-10s] %s\n", difference.Category, difference.Path)
+			fmt.Fprintf(stdout, "    left:  %s\n", emptyAs(difference.Left, "<empty>"))
+			fmt.Fprintf(stdout, "    right: %s\n", emptyAs(difference.Right, "<empty>"))
+		}
+	}
+	if !report.Equivalent {
+		return 3
+	}
+	return 0
+}
+
+func runMatrix(args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("matrix", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	targetIDs := set.String("targets", "", "comma-separated target profile IDs; default: host")
+	allTargets := set.Bool("all", false, "select every built-in target profile")
+	excludeIDs := set.String("exclude", "", "comma-separated target profile IDs to exclude")
+	jobs := set.Int("jobs", 0, "maximum concurrent target tasks; default: min(CPU, 4)")
+	failFast := set.Bool("fail-fast", false, "cancel targets that have not started after the first failure or blocked plan")
+	planOnly := set.Bool("plan-only", false, "create plans for all targets without provisioning or building")
+	reportPath := set.String("output", "", "matrix report path; default: <out>/matrix.json")
+	jsonOutput := set.Bool("json", false, "print the matrix report as JSON")
+
+	sysrootPath := set.String("sysroot", "", "explicit sysroot path applied to selected targets")
+	cacheDir := set.String("cache-dir", "", "Miruri cache root")
+	offline := set.Bool("offline", false, "forbid registry access and require cached managed sysroots")
+	refreshSysroot := set.Bool("refresh-sysroot", false, "refresh managed sysroot locks")
+	sysrootTimeout := set.Duration("sysroot-timeout", 45*time.Minute, "timeout for each managed sysroot provisioning task")
+	outDir := set.String("out", "", "artifact output directory; default: <project>/dist")
+	generator := set.String("generator", "", "CMake generator")
+	useCodex := set.Bool("codex", false, "allow Codex portability work in isolated target workspaces")
+	codexModeFlag := set.String("codex-mode", string(codex.TaskRepair), "Codex task mode: repair, auto, or port")
+	maxRepairs := set.Int("max-repairs", 2, "maximum Codex repair attempts per target")
+	codexBin := set.String("codex-bin", "codex", "Codex CLI executable")
+	codexModel := set.String("codex-model", "", "optional Codex model override")
+	codexProfile := set.String("codex-profile", "", "optional Codex CLI profile")
+	codexAuth := set.String("codex-auth", string(codex.AuthChatGPT), "Codex authentication policy: chatgpt or inherit")
+	codexTimeout := set.Duration("codex-timeout", 20*time.Minute, "timeout for each Codex repair attempt")
+	codexInstructions := set.String("instructions", "", "additional Codex instructions applied to every attempt")
+	codexInstructionsFile := set.String("instructions-file", "", "read additional Codex instructions from a UTF-8 text file")
+	keepWork := set.Bool("keep-work", false, "keep isolated work directories")
+	dryRun := set.Bool("dry-run", false, "write verified metadata-only artifact sets without invoking build tools")
+	reuse := set.Bool("reuse", false, "reuse identity-matching artifact sets after strict verification")
+	timeout := set.Duration("timeout", 30*time.Minute, "per build-attempt timeout")
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+
+	profiles, err := resolveMatrixTargets(*targetIDs, *excludeIDs, *allTargets)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri matrix:", err)
+		return 2
+	}
+	authMode, err := parseCodexAuth(*codexAuth)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri matrix:", err)
+		return 2
+	}
+	codexMode, err := parseCodexMode(*codexModeFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri matrix:", err)
+		return 2
+	}
+	customInstructions, err := loadCodexInstructions(*codexInstructions, *codexInstructionsFile)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri matrix:", err)
+		return 2
+	}
+	instructionsFilePath, err := absoluteInstructionsFilePath(*codexInstructionsFile)
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri matrix:", err)
+		return 2
+	}
+	if customInstructions != "" && !*useCodex && !*planOnly {
+		fmt.Fprintln(stderr, "miruri matrix: --instructions/--instructions-file require --codex")
+		return 2
+	}
+	project := positionalPath(set.Args())
+	report, err := matrix.Run(context.Background(), matrix.Config{
+		ProjectDir: project,
+		Targets:    profiles,
+		Jobs:       *jobs,
+		FailFast:   *failFast,
+		PlanOnly:   *planOnly,
+		OutDir:     *outDir,
+		ReportPath: *reportPath,
+		Progress:   stderr,
+		Build: builder.Config{
+			Sysroot:                 *sysrootPath,
+			CacheDir:                *cacheDir,
+			Offline:                 *offline,
+			RefreshSysroot:          *refreshSysroot,
+			SysrootTimeout:          *sysrootTimeout,
+			Generator:               *generator,
+			UseCodex:                *useCodex,
+			CodexMode:               codexMode,
+			MaxRepairs:              *maxRepairs,
+			CodexBinary:             *codexBin,
+			CodexModel:              *codexModel,
+			CodexProfile:            *codexProfile,
+			CodexAuth:               authMode,
+			CodexTimeout:            *codexTimeout,
+			CodexInstructions:       customInstructions,
+			CodexInstructionsInline: *codexInstructions,
+			CodexInstructionsFile:   instructionsFilePath,
+			KeepWork:                *keepWork,
+			DryRun:                  *dryRun,
+			Reuse:                   *reuse,
+			Version:                 Version,
+			Timeout:                 *timeout,
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "miruri matrix:", err)
+		return 1
+	}
+	if *jsonOutput {
+		if code := writeJSON(stdout, stderr, report); code != 0 {
+			return code
+		}
+	} else {
+		fmt.Fprintf(stdout, "Project:       %s\n", report.ProjectName)
+		fmt.Fprintf(stdout, "Digest:        %s\n", report.ProjectDigest)
+		fmt.Fprintf(stdout, "Mode:          %s\n", report.Mode)
+		fmt.Fprintf(stdout, "Concurrency:   %d\n", report.Jobs)
+		fmt.Fprintf(stdout, "Matrix report: %s\n", report.ReportPath)
+		fmt.Fprintln(stdout, "Targets:")
+		for _, result := range report.Results {
+			detail := ""
+			if result.BuildID != "" {
+				detail = " build=" + result.BuildID
+			}
+			if result.Plan != nil {
+				detail = " plan=" + result.Plan.Status
+			}
+			if result.Error != "" {
+				detail += " error=" + result.Error
+			}
+			fmt.Fprintf(stdout, "  %-20s %-10s %6dms%s\n", result.Target.ID, result.Status, result.DurationMillis, detail)
+		}
+		fmt.Fprintf(stdout, "Summary: planned=%d succeeded=%d reused=%d failed=%d blocked=%d canceled=%d\n", report.Summary.Planned, report.Summary.Succeeded, report.Summary.Reused, report.Summary.Failed, report.Summary.Blocked, report.Summary.Canceled)
+	}
+	if report.Summary.Failed > 0 || report.Summary.Canceled > 0 {
+		return 1
+	}
+	if report.Summary.Blocked > 0 {
+		return 3
+	}
+	return 0
+}
+
+func loadCodexInstructions(inline, filePath string) (string, error) {
+	sections := make([]string, 0, 2)
+	if strings.TrimSpace(filePath) != "" {
+		payload, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("read instructions file %q: %w", filePath, err)
+		}
+		if !utf8.Valid(payload) {
+			return "", fmt.Errorf("instructions file %q is not valid UTF-8", filePath)
+		}
+		if value := strings.TrimSpace(string(payload)); value != "" {
+			sections = append(sections, value)
+		}
+	}
+	if value := strings.TrimSpace(inline); value != "" {
+		sections = append(sections, value)
+	}
+	return strings.Join(sections, "\n\n"), nil
+}
+
+func absoluteInstructionsFilePath(filePath string) (string, error) {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve instructions file %q: %w", filePath, err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+func resolveMatrixTargets(values, exclusions string, all bool) ([]model.TargetProfile, error) {
+	var profiles []model.TargetProfile
+	if all {
+		listed, err := target.List()
+		if err != nil {
+			return nil, err
+		}
+		profiles = listed
+	} else {
+		ids := splitCSV(values)
+		if len(ids) == 0 {
+			ids = []string{"host"}
+		}
+		for _, id := range ids {
+			profile, err := target.Resolve(id)
+			if err != nil {
+				return nil, err
+			}
+			profiles = append(profiles, profile)
+		}
+	}
+	excluded := map[string]bool{}
+	for _, id := range splitCSV(exclusions) {
+		profile, err := target.Resolve(id)
+		if err != nil {
+			return nil, fmt.Errorf("invalid excluded target: %w", err)
+		}
+		excluded[profile.ID] = true
+	}
+	seen := map[string]bool{}
+	filtered := profiles[:0]
+	for _, profile := range profiles {
+		if excluded[profile.ID] || seen[profile.ID] {
+			continue
+		}
+		seen[profile.ID] = true
+		filtered = append(filtered, profile)
+	}
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("target selection is empty after exclusions")
+	}
+	return filtered, nil
+}
+
+func splitCSV(value string) []string {
+	var values []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
+}
+
 func parseCodexAuth(value string) (codex.AuthMode, error) {
 	mode := codex.AuthMode(strings.ToLower(strings.TrimSpace(value)))
 	switch mode {
@@ -616,6 +995,18 @@ func parseCodexMode(value string) (codex.TaskMode, error) {
 	default:
 		return "", fmt.Errorf("invalid Codex mode %q; expected repair, auto, or port", value)
 	}
+}
+
+func resolveAnalysisOutput(value string) (string, []string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil, nil
+	}
+	absolute, err := fsutil.CanonicalPath(value)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve output path: %w", err)
+	}
+	return absolute, []string{absolute}, nil
 }
 
 func positionalPath(args []string) string {
@@ -638,6 +1029,8 @@ func writeJSON(stdout, stderr io.Writer, value any) int {
 func printAnalysis(out io.Writer, report model.AnalysisReport) {
 	fmt.Fprintf(out, "Project:       %s\n", report.ProjectName)
 	fmt.Fprintf(out, "Path:          %s\n", report.ProjectPath)
+	fmt.Fprintf(out, "Digest:        %s\n", report.ProjectDigest)
+	fmt.Fprintf(out, "Fingerprint:   %d entries / %d bytes\n", report.ProjectEntries, report.ProjectBytes)
 	fmt.Fprintf(out, "Files:         %d (%d text, %d binary)\n", report.FileCount, report.TextFileCount, report.BinaryCount)
 	var buildSystems []string
 	for _, system := range report.BuildSystems {
@@ -711,16 +1104,19 @@ func printRootHelp(out io.Writer) {
 	if name == "" {
 		name = "miruri"
 	}
-	fmt.Fprintf(out, `%s — architecture-aware software artifact synthesizer
+	fmt.Fprintf(out, `%[1]s — architecture-aware software artifact synthesizer
 
 Usage:
-  %s <command> [options] [project-directory]
+  %[1]s <command> [options] [project-directory]
 
 Commands:
   analyze   scan the complete project and build a capability graph
   plan      select portability strategies for a target contract
-  build     create an isolated target artifact set without executing it
+  build     create and verify an isolated target artifact set
+  matrix    plan or build multiple targets with bounded parallelism
   port      perform an authorized full platform port with Codex, then build
+  verify    verify one artifact set without executing target code
+  compare   structurally compare two artifact sets
   sysroot   provision and manage verified cross-Linux sysroots
   inspect   inspect one ELF, Mach-O, PE or archive artifact
   doctor    inspect the local build environment
@@ -729,19 +1125,24 @@ Commands:
   version   print version information
 
 Examples:
-  %s analyze .
-  %s plan --target linux-riscv64 .
-  %s build --target host fixtures/hello-c
-  %s sysroot ensure --target linux-arm64
-  %s build --target linux-arm64 .
-  %s build --target linux-arm64 --offline --codex .
-  %s port --target linux-x86_64 ./windows-app
-  %s build --target linux-riscv32 --sysroot /opt/sysroots/riscv32 .
-  %s codex status
-  %s inspect --target host dist/host/artifacts/program
+  %[1]s analyze .
+  %[1]s plan --target linux-riscv64 .
+  %[1]s build --target host fixtures/hello-c
+  %[1]s build --target linux-arm64 --reuse .
+  %[1]s matrix --plan-only --targets linux-x86_64,linux-arm64 --jobs 2 .
+  %[1]s verify --strict dist/linux-arm64
+  %[1]s compare dist/old/linux-arm64 dist/new/linux-arm64
+  %[1]s sysroot ensure --target linux-arm64
+  %[1]s build --target linux-arm64 --offline --codex .
+  %[1]s port --target linux-x86_64 ./windows-app
+  %[1]s build --target linux-riscv32 --sysroot /opt/sysroots/riscv32 .
+  %[1]s codex status
+  %[1]s inspect --target host dist/host/artifacts/program
 
-Miruri v0.1 supports CMake, Meson, Autotools, and Make projects. Trusted cross-Linux profiles use
-managed OCI sysroots by default. GUI, graphics, shader, audio, input, plugin and
-asset requirements remain represented independently from the initial builders.
-`, name, name, name, name, name, name, name, name, name, name, name, name)
+Miruri v0.1 supports CMake, Meson, Autotools, and Make projects. Each published
+artifact set is staged, self-verified, indexed by SHA-256, and accompanied by
+analysis, plan, license evidence, and an SPDX 2.3 SBOM. Trusted cross-Linux
+profiles use managed OCI sysroots by default. Target artifacts are never
+executed by the artifact-only builder or verifier.
+`, name)
 }

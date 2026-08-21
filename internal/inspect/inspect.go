@@ -27,6 +27,7 @@ type Result struct {
 
 func CollectAndPackage(searchRoot, packageRoot string, target model.TargetProfile) (Result, error) {
 	var result Result
+	copiedAppBundles := map[string]bool{}
 	err := filepath.WalkDir(searchRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("cannot inspect %s: %v", path, walkErr))
@@ -60,6 +61,19 @@ func CollectAndPackage(searchRoot, packageRoot string, target model.TargetProfil
 		if err != nil {
 			return err
 		}
+		if target.OS == "darwin" {
+			if appRoot, ok := macOSAppBundleRoot(path, searchRoot); ok && !copiedAppBundles[appRoot] {
+				appRel, relErr := filepath.Rel(searchRoot, appRoot)
+				if relErr != nil {
+					return relErr
+				}
+				appDestination := filepath.Join(packageRoot, "artifacts", appRel)
+				if copyErr := fsutil.CopyTree(appRoot, appDestination); copyErr != nil {
+					return fmt.Errorf("copy macOS app bundle %s: %w", appRoot, copyErr)
+				}
+				copiedAppBundles[appRoot] = true
+			}
+		}
 		destination := filepath.Join(packageRoot, "artifacts", rel)
 		if err := fsutil.CopyFile(path, destination, info.Mode().Perm()); err != nil {
 			return err
@@ -74,6 +88,36 @@ func CollectAndPackage(searchRoot, packageRoot string, target model.TargetProfil
 	}
 	sort.Slice(result.Artifacts, func(i, j int) bool { return result.Artifacts[i].PackagedPath < result.Artifacts[j].PackagedPath })
 	return result, nil
+}
+
+func macOSAppBundleRoot(path, searchRoot string) (string, bool) {
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(searchRoot)
+	if err != nil {
+		return "", false
+	}
+	current := filepath.Dir(pathAbs)
+	for {
+		if strings.HasSuffix(strings.ToLower(filepath.Base(current)), ".app") {
+			rel, relErr := filepath.Rel(rootAbs, current)
+			if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel) {
+				return current, true
+			}
+			return "", false
+		}
+		if current == rootAbs || current == filepath.Dir(current) {
+			return "", false
+		}
+		parent := filepath.Dir(current)
+		rel, relErr := filepath.Rel(rootAbs, parent)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return "", false
+		}
+		current = parent
+	}
 }
 
 func InspectFile(path string, target model.TargetProfile) (model.ArtifactInfo, bool, error) {

@@ -12,13 +12,22 @@
 - [x] host artifact fixture
 - [x] macOS/Linux CI
 - [x] first external Codex repair report (`fzy`, synthetic ARM64 blocker)
+- [x] deterministic project fingerprint / request digest / Build ID
+- [x] strict non-executing artifact-set verifier
+- [x] verified artifact reuse
+- [x] SPDX 2.3 artifact inventory and conservative license evidence report
+- [x] SHA-256 integrity index and transactional publication
+- [x] structural artifact-set comparison
+- [x] bounded multi-target plan/build matrix
+- [x] compute/platform/build-portability detection packs
 
 ## v0.2 — Environment and dependency resolver
 
 - [x] sysroot lock and content-addressed store (`v0.1.0-alpha.8`で先行実装)
 - [x] trusted provider registry (`v0.1.0-alpha.8`でLinux組み込みproviderを先行実装)
 - source dependency rebuild
-- SBOM and license closure
+- [x] packaged-artifact SPDX 2.3 document and project license evidence (`v0.1.0-alpha.9.0`で先行実装)
+- transitive dependency SBOM and license closure
 - Docker Linux worker
 - Parallels/remote Windows worker protocol
 
@@ -87,3 +96,16 @@
 - content-addressed store、target lock、offline reuse、explicit refreshを提供する。
 - sysroot内GCC runtimeとhost Clang/LLDをCMake/Makeへ自動配線する。
 - `sysroot.lock.json`とmanifestへprovider/toolchain provenanceを保存する。
+
+
+## v0.1.0-alpha.9.0: Verifiable artifact lifecycle and build matrix
+
+- source treeのlength-framed決定論的SHA-256 fingerprintとbuild request identityを追加する。
+- identity一致かつstrict verification成功時だけartifact setを再利用する。
+- `licenses.json`、SPDX 2.3 SBOM、`checksums.sha256`を全artifact setへ追加する。
+- `miruri verify --strict`でmetadata identity、license/SPDX semantic linkage、sysroot lock、artifact実体、dependency metadata、checksum coverageを非実行検証する。
+- staging上で自己検証後にtransactional publishし、failed buildから以前の正常setを保護する。
+- `miruri compare`でidentity、target、toolchain、sysroot、Capability、strategy、license、artifact差分を分類する。
+- `miruri matrix`で解析一回・複数targetのbounded parallel plan/buildと集約reportを生成し、output/report除外を各builderへ伝播する。
+- CUDA/OpenCL/OpenMP、SVE/RVV/WASM SIMD、packed ABI、Win32/POSIX platform API、cross-build hazardの検出とplanningを追加する。
+- analysis、plan、manifest、licenses、verification、comparison、matrixの公開JSON schemaを実出力へ同期する。

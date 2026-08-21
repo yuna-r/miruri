@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miruri.dev/schema/comparison-v1.json",
+  "title": "Miruri Artifact Comparison Report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "compared_at",
+    "left",
+    "right",
+    "equivalent",
+    "artifact_equivalent",
+    "artifact_summary",
+    "differences"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "miruri.comparison.v1"
+    },
+    "compared_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "left": {
+      "type": "object",
+      "required": [
+        "package_dir",
+        "manifest_path",
+        "project_name",
+        "target_id"
+      ],
+      "properties": {
+        "package_dir": {
+          "type": "string"
+        },
+        "manifest_path": {
+          "type": "string"
+        },
+        "project_name": {
+          "type": "string"
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "build_id": {
+          "type": "string"
+        },
+        "build_status": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "right": {
+      "type": "object",
+      "required": [
+        "package_dir",
+        "manifest_path",
+        "project_name",
+        "target_id"
+      ],
+      "properties": {
+        "package_dir": {
+          "type": "string"
+        },
+        "manifest_path": {
+          "type": "string"
+        },
+        "project_name": {
+          "type": "string"
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "build_id": {
+          "type": "string"
+        },
+        "build_status": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "equivalent": {
+      "type": "boolean"
+    },
+    "artifact_equivalent": {
+      "type": "boolean"
+    },
+    "artifact_summary": {
+      "type": "object",
+      "required": [
+        "added",
+        "removed",
+        "changed",
+        "same"
+      ],
+      "properties": {
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "removed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "same": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "differences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "category",
+          "path"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "left": {
+            "type": "string"
+          },
+          "right": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
