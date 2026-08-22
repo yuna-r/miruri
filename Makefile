@@ -1,5 +1,5 @@
 BINARY := bin/miruri
-VERSION := 0.1.0-alpha.9.11
+VERSION := 0.1.0-alpha.9.12
 COMMIT := $(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then c=$$(git rev-parse --short HEAD); if ! git diff --quiet --ignore-submodules HEAD 2>/dev/null || test -n "$$(git ls-files --others --exclude-standard 2>/dev/null)"; then c="$$c-dirty"; fi; else c=dev; fi; printf '%s' "$$c")
 LDFLAGS := -s -w \
 	-X github.com/yuna-r/miruri/internal/cli.Version=$(VERSION) \

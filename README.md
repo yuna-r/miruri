@@ -4,9 +4,19 @@
 
 既存のC/C++プロジェクト全体を解析し、対象CPU・OS・ABI・SDK・GUI・graphics・shader・audio・input・plugin・assetの要件を分離したうえで、指定ターゲット向けの配布可能な成果物を生成することを目標としています。
 
-> Status: `v0.1.0-alpha.9.11` — verifiable artifact sets, managed cross-Linux sysroots, and multi-target matrices
+> Status: `v0.1.0-alpha.9.12` — full-platform ports, persistent Codex sessions, and verifiable artifact sets
 
 Miruri v0.1は、対象バイナリをエミュレーション実行しません。まずは **解析、移植計画、CMake/Meson/Autotools/Makeビルド、リンク済み成果物の静的検査、manifest生成** を確実に行う段階です。
+
+## Demo: Direct3D Marble Maze → macOS / Metal
+
+Microsoft公式の [Windows-appsample-marble-maze](https://github.com/microsoft/Windows-appsample-marble-maze) を、`miruri port --target macos-arm64` でmacOS / Apple Silicon向けへ移植したデモです。
+
+![Miruri port demo: Microsoft Direct3D Marble Maze running on macOS/Metal](docs/assets/marble-maze-macos.gif)
+
+この実行では **Codex 1 attempt / 18分47秒** で、元のC++ゲームロジック・SDKMesh・DDS・音声資産を維持しながら、Windows / Direct3D側のplatform依存を **AppKit / Metal / AVFoundation / GameController** ベースへ移植しました。生成された`MarbleMaze.app`はApple Silicon Mac上で3D描画・音声・キーボード/マウス入力・UIを含めて実際にプレイできることを確認しています。
+
+> MiruriはDirect3DそのものをmacOSで実行しているわけではありません。既存実装とshipped contentの意味を可能な限り保持しつつ、target-nativeなplatform backendへ移植します。
 
 ## 現在できること
 

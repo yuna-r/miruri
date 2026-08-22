@@ -2,6 +2,13 @@
 
 All notable changes to Miruri will be documented here.
 
+## [0.1.0-alpha.9.12] - 2026-08-22
+
+### Added
+
+- Add the macOS/Metal Marble Maze GIF demo to the repository and surface it near the top of the README.
+- Document the verified showcase result: Microsoft's Direct3D Marble Maze was ported to Apple Silicon macOS in one Codex attempt (18m47.758s), preserving the original C++ gameplay/asset semantics while generating target-native AppKit/Metal/AVFoundation/GameController integration.
+
 ## [0.1.0-alpha.9.11] - 2026-08-22
 
 ### Changed
